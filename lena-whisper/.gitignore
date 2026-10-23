@@ -1,6 +1,0 @@
-# Per-user files. Each person who clones the repo creates their own.
-participant_ids.txt
-my_commands.txt
-logs/
-runs/
-__pycache__/
