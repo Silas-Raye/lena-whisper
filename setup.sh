@@ -11,7 +11,8 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 SHOW_DIR="${LW_DIR/#"$HOME"/"~"}"
 
-step() { printf "\n[%s/7] %s\n" "$1" "$2"; }
+step() { printf "\n[%s/8] %s\n" "$1" "$2"; }
+show() { echo "${1/#"$HOME"/"~"}"; }
 
 # ---- 0. Make sure we're on ACCRE --------------------------------------------
 if [ ! -d "$(dirname "$DATA_ROOT")" ] || ! command -v sbatch >/dev/null; then
@@ -32,26 +33,36 @@ if [[ ! "${answer:-Y}" =~ ^[Yy] ]]; then
     exit 1
 fi
 
-# ---- 2. SLURM account -------------------------------------------------------
-step 2 "Check access to the lab's GPU account (${SLURM_ACCOUNT})"
-account_found=$(sacctmgr -n -P show assoc where user="$USER" \
-    account="$SLURM_ACCOUNT" format=Account 2>/dev/null || true)
-if [ -n "$account_found" ]; then
-    echo "    [✓] You can submit jobs to ${SLURM_ACCOUNT}"
-else
-    echo "    [!] Your user isn't in ${SLURM_ACCOUNT} yet, so jobs will fail with"
-    echo "        \"Invalid account\". Ask the lab to have ACCRE add you. Setup"
-    echo "        continues; you don't need to rerun it after you're added."
-fi
+# ---- 2. SLURM accounts ------------------------------------------------------
+step 2 "Check access to the lab's SLURM accounts"
+for pair in "${SLURM_ACCOUNT}:GPU account (Whisper)" "${CRY_SLURM_ACCOUNT}:CPU account (cry detection)"; do
+    account="${pair%%:*}"
+    purpose="${pair#*:}"
+    [ -n "$account" ] || continue
+    account_found=$(sacctmgr -n -P show assoc where user="$USER" \
+        account="$account" format=Account 2>/dev/null || true)
+    if [ -n "$account_found" ]; then
+        echo "    [✓] You can submit jobs to ${account}, the ${purpose}"
+    else
+        echo "    [!] Your user isn't in ${account}, the ${purpose}, so those jobs"
+        echo "        will fail with \"Invalid account\". Ask the lab to have ACCRE add"
+        echo "        you. Setup continues; you don't need to rerun it after you're added."
+    fi
+done
 
 # ---- 3. Data folders --------------------------------------------------------
 step 3 "Create your data folders in /nobackup"
-mkdir -p "$RAW_DIR" "$CHUNK_DIR" "$OUT_DIR"
+mkdir -p "$RAW_DIR" "$CHUNK_DIR" "$OUT_DIR" "$CRY_DIR" "$COMBINED_DIR"
 # Recordings are research data: only you can read your folder.
 chmod 700 "$DATA_ROOT"
-echo "    [✓] ${RAW_DIR}"
-echo "    [✓] ${CHUNK_DIR}"
-echo "    [✓] ${OUT_DIR}"
+for dir in "$RAW_DIR" "$CHUNK_DIR" "$OUT_DIR" "$CRY_DIR" "$COMBINED_DIR"; do
+    echo "    [✓] ${dir}"
+done
+if mkdir -p "$ITS_DIR" 2>/dev/null; then
+    echo "    [✓] ${ITS_DIR}"
+else
+    echo "    [!] Couldn't create ${ITS_DIR} (ITS_DIR in config.sh). Ask the lab maintainer."
+fi
 echo "        (Only you can open ${DATA_ROOT}.)"
 
 # ---- 4. Files in this folder ------------------------------------------------
@@ -68,8 +79,8 @@ else
     echo "    [✓] participant_ids.txt already exists; left unchanged"
 fi
 
-# ---- 5. Python environment --------------------------------------------------
-step 5 "Set up the Python environment (${VENV_DIR/#"$HOME"/"~"})"
+# ---- 5. Whisper environment -------------------------------------------------
+step 5 "Set up the Whisper environment ($(show "$VENV_DIR"))"
 set +eu   # ACCRE's environment scripts aren't written for strict mode
 if ! type setup_accre_software_stack >/dev/null 2>&1; then
     source /etc/profile >/dev/null 2>&1
@@ -82,6 +93,14 @@ fi
 setup_accre_software_stack
 set -eu
 
+# Both environments unpack their install files in /nobackup: the gateway
+# limits /tmp to 2 GB per user, and PyTorch's and TensorFlow's are larger.
+pip_tmp="${DATA_ROOT}/.pip-tmp"
+
+if [ -d "${HOME}/whisper-env" ] && [ "${HOME}/whisper-env" != "$VENV_DIR" ]; then
+    echo "    [~] ~/whisper-env is from an older setup. The environment now lives in"
+    echo "        $(show "$VENV_DIR"). When setup finishes, cleanup.sh can delete the old one."
+fi
 if [ ! -f "${VENV_DIR}/bin/activate" ]; then
     echo "    Creating the environment..."
     python3 -m venv "$VENV_DIR"
@@ -96,9 +115,6 @@ if python -c "import whisper" 2>/dev/null; then
 else
     echo "    Installing Whisper and PyTorch. This downloads several GB and can"
     echo "    take 10-20 minutes..."
-    # The gateway limits /tmp to 2 GB per user, and PyTorch's install files
-    # are larger, so unpack them in /nobackup instead and skip pip's cache.
-    pip_tmp="${DATA_ROOT}/.pip-tmp"
     mkdir -p "$pip_tmp"
     TMPDIR="$pip_tmp" pip install --no-cache-dir --upgrade pip
     TMPDIR="$pip_tmp" pip install --no-cache-dir openai-whisper
@@ -123,9 +139,43 @@ else
     echo "    [!] The download didn't finish. The first job will download the"
     echo "        model instead, using a few minutes of its GPU time."
 fi
+set +u
+deactivate
+set -u
 
-# ---- 7. Personalized copy commands ------------------------------------------
-step 7 "Write your copy commands to ${SHOW_DIR}/my_commands.txt"
+# ---- 7. Cry detection -------------------------------------------------------
+step 7 "Set up cry detection with YAMNet ($(show "$CRY_VENV_DIR"))"
+if [ ! -f "${CRY_VENV_DIR}/bin/activate" ]; then
+    echo "    Creating the environment..."
+    python3 -m venv "$CRY_VENV_DIR"
+fi
+set +u
+# shellcheck source=/dev/null
+source "${CRY_VENV_DIR}/bin/activate"
+set -u
+
+if python -c "import tensorflow, soundfile" 2>/dev/null; then
+    echo "    [✓] TensorFlow is already installed"
+else
+    echo "    Installing TensorFlow. This downloads about 300 MB, takes about"
+    echo "    1 GB of space, and can take 5 minutes..."
+    mkdir -p "$pip_tmp"
+    TMPDIR="$pip_tmp" pip install --no-cache-dir --upgrade pip
+    TMPDIR="$pip_tmp" pip install --no-cache-dir -r "${LW_DIR}/requirements-cry.txt"
+    rm -rf "$pip_tmp"
+    echo "    [✓] TensorFlow installed"
+fi
+
+# YAMNet comes with the repository (cry_model/yamnet); check that it loads.
+if ! python "${LW_DIR}/batchCryDetection.py" --check 2>&1 | sed 's/^/    /'; then
+    echo "    [!] YAMNet didn't load; see the message above."
+fi
+set +u
+deactivate
+set -u
+
+# ---- 8. Personalized copy commands ------------------------------------------
+step 8 "Write your copy commands to ${SHOW_DIR}/my_commands.txt"
 if [[ "$LW_DIR" == "$HOME"/* ]]; then
     remote_repo="${LW_DIR#"$HOME"/}"   # scp paths without a leading / start in your home folder
 else
@@ -146,6 +196,8 @@ lab server first. Then replace:
   <TIMEPOINT>    the age folder, for example 12-mo
   <ID4>          the first 4 digits of the ID, for example 1243
   <PARTICIPANT>  the full ID, for example 1243_029768
+  <ITS_FOLDER>   the lab server folder with the .its files and lookup table
+  <ITS_FILE>     an .its file's name, for example 20211105_123641_029768
 
 ---------------------------------------------------------------------
 MAC (Terminal)
@@ -156,9 +208,15 @@ Upload a recording to ACCRE:
 Upload your participant list (from the folder that contains it):
   scp participant_ids.txt ${host}:${remote_repo}/participant_ids.txt
 
-Copy one participant's finished transcripts to the lab server:
+Upload .its files and the lookup table:
+  scp "<ITS_FOLDER>/<ITS_FILE>.its" "<ITS_FOLDER>/its_identifier_file_babies_crb.csv" ${host}:${ITS_DIR}/
+
+Copy one participant's transcripts, combined CSV, and cry detection CSV
+to the lab server:
   mkdir -p "${mac_txt}"
   scp -r ${host}:${OUT_DIR}/<ID4>/<PARTICIPANT> "${mac_txt}/"
+  scp ${host}:${COMBINED_DIR}/<ID4>/<PARTICIPANT>_combined.csv "${mac_txt}/"
+  scp ${host}:${CRY_DIR}/<ID4>/<PARTICIPANT>_cry.csv "${mac_txt}/"
 
 ---------------------------------------------------------------------
 WINDOWS (Command Prompt; X: is the drive you mapped the lab server to)
@@ -169,10 +227,15 @@ Upload a recording to ACCRE:
 Upload your participant list (from the folder that contains it):
   scp participant_ids.txt ${host}:${remote_repo}/participant_ids.txt
 
-Copy one participant's finished transcripts to the lab server
-(ignore mkdir's message if the folder already exists):
+Upload .its files and the lookup table:
+  scp "<ITS_FOLDER>/<ITS_FILE>.its" "<ITS_FOLDER>/its_identifier_file_babies_crb.csv" ${host}:${ITS_DIR}/
+
+Copy one participant's transcripts, combined CSV, and cry detection CSV
+to the lab server (ignore mkdir's message if the folder already exists):
   mkdir "${win_txt_mkdir}"
   scp -r ${host}:${OUT_DIR}/<ID4>/<PARTICIPANT> "${win_txt}/"
+  scp ${host}:${COMBINED_DIR}/<ID4>/<PARTICIPANT>_combined.csv "${win_txt}/"
+  scp ${host}:${CRY_DIR}/<ID4>/<PARTICIPANT>_cry.csv "${win_txt}/"
 EOF
 echo "    [✓] Saved. View it with: cat ${SHOW_DIR}/my_commands.txt"
 
@@ -183,5 +246,7 @@ cat <<EOF
     1. Copy recordings to ACCRE      (cat ${SHOW_DIR}/my_commands.txt)
     2. List their IDs                (nano ${SHOW_DIR}/participant_ids.txt)
     3. Start transcribing            (bash ${SHOW_DIR}/submit_whisper_subjects.sh)
-    4. Check progress                (bash ${SHOW_DIR}/status.sh)
+    4. Start cry detection           (bash ${SHOW_DIR}/submit_cry_subjects.sh)
+    5. Check progress                (bash ${SHOW_DIR}/status.sh, cry_status.sh)
+    6. Combine the results           (bash ${SHOW_DIR}/combine_subjects.sh)
 EOF

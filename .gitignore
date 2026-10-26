@@ -4,3 +4,6 @@ my_commands.txt
 logs/
 runs/
 __pycache__/
+# The Python environments that setup.sh creates
+whisper-env/
+cry-env/

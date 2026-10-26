@@ -43,6 +43,47 @@ raw_path() {
     done
 }
 
+# Print where a participant's cry detection CSV and combined CSV go.
+cry_path()      { echo "${CRY_DIR}/${1:0:4}/${1}_cry.csv"; }
+combined_path() { echo "${COMBINED_DIR}/${1:0:4}/${1}_combined.csv"; }
+
+# Print the cry detection state of one participant. Cry detection reads the
+# 5-minute chunks that the first Whisper job cuts from the recording.
+#   missing   no recording or chunks on ACCRE
+#   waiting   recording uploaded, not chunked yet
+#   ready     chunked, cry detection not run yet
+#   done      the cry CSV exists
+cry_state() {
+    local state
+    if [ -f "$(cry_path "$1")" ]; then
+        echo "done"
+        return
+    fi
+    read -r state _ <<< "$(participant_status "$1")"
+    case "$state" in
+        transcribing|done) echo "ready" ;;
+        new|chunking)      echo "waiting" ;;
+        *)                 echo "missing" ;;
+    esac
+}
+
+# Print the participant of each of your queued or running jobs with the given
+# names (comma-separated), one per line. A job's participant is the line of
+# its participant list that matches its array task number; "?" means the
+# list couldn't be read.
+queued_participants() {
+    local job task list
+    { squeue --me -h -r -n "$1" -o "%i" 2>/dev/null || true; } | while read -r job; do
+        task="${job##*_}"
+        list=$(scontrol show job "$job" 2>/dev/null | sed -n 's/^ *Command=[^ ]* //p')
+        if [[ "$task" =~ ^[0-9]+$ ]] && [ -f "$list" ]; then
+            sed -n "${task}p" "$list"
+        else
+            echo "?"
+        fi
+    done
+}
+
 # Print "<state> <chunks transcribed> <total chunks>" for one participant.
 # States:
 #   missing       no recording on ACCRE

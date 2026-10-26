@@ -5,19 +5,33 @@
 # Per-user paths come from $USER, which on ACCRE is your VUNetID.
 # A lab maintainer changes this file when the lab's setup changes.
 
-# ---- Where each user's audio and transcripts live ------------------------
+# ---- Where each user's audio and results live ------------------------------
 # /nobackup is large, fast, and NOT backed up. Originals stay on the lab server.
 DATA_ROOT="${LW_DATA_ROOT:-/nobackup/userspace/${USER}}"
 RAW_DIR="${DATA_ROOT}/rawAudio"
 CHUNK_DIR="${DATA_ROOT}/chunkedAudioInput"
 OUT_DIR="${DATA_ROOT}/transcriptOut"
+CRY_DIR="${DATA_ROOT}/cryOut"
+COMBINED_DIR="${DATA_ROOT}/combinedOut"
+# .its files from LENA, plus the lookup table that names each one's recording.
+# Only you can open DATA_ROOT, so to share one folder of .its files across the
+# lab, point this at a folder that everyone in the lab can read.
+ITS_DIR="${LW_ITS_DIR:-${DATA_ROOT}/itsFiles}"
 
 # ---- Software ---------------------------------------------------------------
-VENV_DIR="${HOME}/whisper-env"
+# Both Python environments live in the repository folder (LW_DIR, set by lib.sh).
+VENV_DIR="${LW_DIR}/whisper-env"
 FFMPEG_MODULE="ffmpeg/7.1.1"
 WHISPER_MODEL="large-v2"
+CRY_VENV_DIR="${LW_DIR}/cry-env"
+# YAMNet, which comes with the repository (cry_model/README.md).
+CRY_MODEL="${LW_DIR}/cry_model/yamnet"
+# A second counts as crying when YAMNet's "Baby cry, infant cry" score is at
+# least this. The cry CSVs keep every second's score, so you can apply another
+# threshold later without rerunning; see the README section on cry detection.
+CRY_THRESHOLD="0.5"
 
-# ---- GPU job settings ---------------------------------------------------------
+# ---- GPU job settings (Whisper) ----------------------------------------------
 # The lab currently has GPU access only through the shared debug QoS:
 # 1 GPU per user and 30 minutes per job. Each job transcribes part of a
 # recording; resubmitting continues where the last job stopped.
@@ -36,3 +50,14 @@ SLURM_TIME="00:30:00"
 SLURM_CPUS="2"
 SLURM_MEM="16G"
 MAX_PARALLEL="10"   # most array tasks running at once
+
+# ---- CPU job settings (cry detection) ----------------------------------------
+# Cry detection doesn't need a GPU, so it runs on the regular CPU partition
+# with the lab's CPU account (the GPU account's name without _iacc) and
+# doesn't compete with Whisper for your one debug GPU. A 16-hour recording
+# took about 2 minutes with 2 CPUs and under 2 GB of memory in testing.
+CRY_SLURM_ACCOUNT="l3_humphreys_lab"
+CRY_SLURM_PARTITION="batch"
+CRY_SLURM_TIME="01:00:00"
+CRY_SLURM_CPUS="2"
+CRY_SLURM_MEM="4G"
