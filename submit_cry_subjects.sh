@@ -87,6 +87,7 @@ sbatch_args=(
     --mem="$CRY_SLURM_MEM"
     --array="1-${n_queued}%${MAX_PARALLEL}"
     --output="${LW_DIR}/logs/%x_%A_%a.log"
+    --comment="${LW_DIR}/${snapshot}"   # lets status scripts tell which task is whose
 )
 if [ -n "$CRY_SLURM_ACCOUNT" ]; then
     sbatch_args+=(--account="$CRY_SLURM_ACCOUNT")

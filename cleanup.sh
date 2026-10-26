@@ -163,10 +163,11 @@ fi
 # theirs when they start. Keep the lists of queued jobs, and any from the
 # last day in case a submission is happening right now.
 if [ -d "${LW_DIR}/runs" ]; then
-    in_use=$( { squeue --me -h -r -n whisper_subject,cry_subject -o "%i" 2>/dev/null || true; } \
-        | while read -r job; do
+    in_use=$( { squeue --me -h -r -n whisper_subject,cry_subject -o "%i %k" 2>/dev/null || true; } \
+        | while read -r job comment; do
+            echo "$comment"
             scontrol show job "$job" 2>/dev/null | sed -n 's/^ *Command=[^ ]* //p'
-        done)
+        done | grep "/runs/" || true)
     if [ -n "$(squeue --me -h -n whisper_subject,cry_subject 2>/dev/null || true)" ] && [ -z "$in_use" ]; then
         echo "    [~] Kept runs/: couldn't tell which lists your queued jobs use"
     else

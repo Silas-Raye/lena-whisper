@@ -69,13 +69,17 @@ cry_state() {
 
 # Print the participant of each of your queued or running jobs with the given
 # names (comma-separated), one per line. A job's participant is the line of
-# its participant list that matches its array task number; "?" means the
-# list couldn't be read.
+# its participant list that matches its array task number. The list is in the
+# job's comment (submit_cry_subjects.sh puts it there) or, failing that, in
+# its command line; "?" means it couldn't be found.
 queued_participants() {
-    local job task list
-    { squeue --me -h -r -n "$1" -o "%i" 2>/dev/null || true; } | while read -r job; do
+    local job comment task list
+    { squeue --me -h -r -n "$1" -o "%i %k" 2>/dev/null || true; } | while read -r job comment; do
         task="${job##*_}"
-        list=$(scontrol show job "$job" 2>/dev/null | sed -n 's/^ *Command=[^ ]* //p')
+        list="$comment"
+        if [ ! -f "$list" ]; then
+            list=$(scontrol show job "$job" 2>/dev/null | sed -n 's/^ *Command=[^ ]* //p')
+        fi
         if [[ "$task" =~ ^[0-9]+$ ]] && [ -f "$list" ]; then
             sed -n "${task}p" "$list"
         else
