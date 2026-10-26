@@ -1,7 +1,7 @@
 # Packages for cry detection (batchCryDetection.py), which runs YAMNet.
-# setup.sh installs them into cry-env. TensorFlow 2.20 has wheels for every
-# Python from 3.9 to 3.13; pip picks the other versions to suit ACCRE's Python.
-tensorflow-cpu==2.20.0 ; sys_platform == "linux"
-tensorflow==2.20.0 ; sys_platform != "linux"
-numpy>=1.26,<3
+# setup.sh installs them into cry-env. On ACCRE, pip takes them from the
+# Alliance WheelHouse (which has "tensorflow", not "tensorflow-cpu"), so the
+# versions are ranges rather than pins. Tested with TensorFlow 2.17 and 2.20.
+tensorflow>=2.15,<3
+numpy>=1.23,<3
 soundfile>=0.12

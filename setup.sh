@@ -157,17 +157,24 @@ set -u
 if python -c "import tensorflow, soundfile" 2>/dev/null; then
     echo "    [✓] TensorFlow is already installed"
 else
-    echo "    Installing TensorFlow. This downloads about 300 MB, takes about"
-    echo "    1 GB of space, and can take 5 minutes..."
+    echo "    Installing TensorFlow. It takes about 1 GB of space and can take"
+    echo "    5 minutes..."
     mkdir -p "$pip_tmp"
     TMPDIR="$pip_tmp" pip install --no-cache-dir --upgrade pip
-    TMPDIR="$pip_tmp" pip install --no-cache-dir -r "${LW_DIR}/requirements-cry.txt"
+    if TMPDIR="$pip_tmp" pip install --no-cache-dir -r "${LW_DIR}/requirements-cry.txt"; then
+        echo "    [✓] TensorFlow installed"
+    else
+        echo "    [!] TensorFlow didn't install (see pip's message above), so cry"
+        echo "        detection can't run yet. To see which TensorFlow versions ACCRE"
+        echo "        offers, run: avail_wheels \"tensorflow*\""
+        echo "        Setup continues; run it again after fixing requirements-cry.txt."
+    fi
     rm -rf "$pip_tmp"
-    echo "    [✓] TensorFlow installed"
 fi
 
 # YAMNet comes with the repository (cry_model/yamnet); check that it loads.
-if ! python "${LW_DIR}/batchCryDetection.py" --check 2>&1 | sed 's/^/    /'; then
+if python -c "import tensorflow" 2>/dev/null \
+        && ! python "${LW_DIR}/batchCryDetection.py" --check 2>&1 | sed 's/^/    /'; then
     echo "    [!] YAMNet didn't load; see the message above."
 fi
 set +u
