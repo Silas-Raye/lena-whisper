@@ -50,6 +50,9 @@ echo "=============================="
 
 export LW_DATA_ROOT="${DATA_ROOT}"
 export LW_WHISPER_MODEL="${WHISPER_MODEL}"
+export LW_ITS_DIR="${ITS_DIR}"
+export LW_LOOKUP_TABLE="${LOOKUP_TABLE}"
+export LW_TIMEPOINT="${TIMEPOINT}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 # -u writes output immediately, so the log shows progress while the job runs

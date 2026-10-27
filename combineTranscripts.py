@@ -2,20 +2,27 @@
 # -*- coding: utf-8 -*-
 """
 combineTranscripts.py — one CSV per recording, with the Whisper transcript,
-LENA's .its data, and cry detection on a single timeline.
+LENA's .its data, and cry and TV detection on a single timeline.
 
 This is the Python version of combineTranscripts_JSON.R, extended with the
-.its file and cry detection. combine_subjects.sh runs it for every
+.its file and cry and TV detection. combine_subjects.sh runs it for every
 participant in participant_ids.txt. To run it by hand on ACCRE:
     python3 combineTranscripts.py <participant_id> [<participant_id> ...]
     e.g. python3 combineTranscripts.py 1243_029768
 
 It needs Python 3.9 or newer and no extra packages. By default it reads, in
 /nobackup/userspace/<VUNetID>/:
-    transcriptOut/<ID4>/<participant>/   Whisper's JSON files, one per chunk
-    cryOut/<ID4>/<participant>_cry.csv   YAMNet cry detection, one row per second
-    itsFiles/                            .its files and the lookup table
-and writes combinedOut/<ID4>/<participant>_combined.csv.
+    <ID>_output/transcriptOut/<participant>/   Whisper's JSON files, one per chunk
+    <ID>_output/cryOut/<participant>_cry.csv   cry and TV detection, per second
+    itsFiles/                                  .its files
+and the lookup table its_identifier_file_babies_crb.csv in this folder. <ID>
+is the part of the participant ID before the "_" (1243 for 1243_029768). It
+writes four files in <ID>_output/combinedOut/:
+    <participant>_combined.csv               everything on one timeline
+    <participant>_combined_transcripts.csv   the transcript alone, exactly as
+                                             combineTranscripts_JSON.R writes it
+    <participant>_cry_tv.csv                 cry and TV detection alone
+    <participant>_its.csv                    the .its file's segments and blocks
 
 To combine copies somewhere else, such as on the lab server, name the files:
     python3 combineTranscripts.py 1243_029768 --transcripts <JSON folder> \\
@@ -24,16 +31,23 @@ Leave a source out with --no-cry or --no-its. The README lists the columns.
 
 How the times line up:
   * Every time is in seconds from the start of the recording, which is the
-    same moment in the .wav file, the .its file, and cry detection.
-  * batchWhisper.py cuts the recording into 5-minute chunks from the start of
-    the file, so chunk N starts at N x 300 seconds. Whisper's times are from
-    the start of their chunk, so this script adds the chunk's start.
+    same moment in the .wav file, the .its file, and cry and TV detection.
+  * batchWhisper.py cuts the recording into chunks in one of two ways. With
+    the .its file, the chunks follow LENA's 5-minute blocks, so the first
+    chunk is shorter than 5 minutes. Without it, they're 5 minutes each from
+    the start of the file. Whisper's times are from the start of their chunk,
+    so this script adds the chunk's start.
+  * To find each chunk's start, it reads <participant>_chunks.csv, which
+    batchWhisper.py writes next to the JSON files; failing that, the chunks'
+    .wav files; failing that, it assumes 5-minute chunks, which is how every
+    recording was chunked before the chunk list existed. It reports which
+    kind of chunking it found: a first chunk of 5 minutes, or a shorter one.
   * The .its file gives the clock time at which the recording started, so
     every row also gets a wall-clock time.
   * LENA's 5-minute blocks follow the wall clock instead of the start of the
     file: a recording that starts at 10:48 has a 2-minute first block, then
     5-minute blocks, and its last block can be short too. lena_block numbers
-    those blocks, so a Whisper chunk usually spans two of them.
+    those blocks.
 """
 
 import os
@@ -43,7 +57,9 @@ import csv
 import json
 import glob
 import math
+import wave
 import bisect
+import shutil
 import getpass
 import argparse
 import xml.etree.ElementTree as ET
@@ -60,26 +76,34 @@ except ImportError:          # Python 3.8 and older
 # combine_subjects.sh passes these from config.sh. The defaults match it.
 USER      = os.environ.get("USER") or getpass.getuser()
 DATA_ROOT = os.environ.get("LW_DATA_ROOT", f"/nobackup/userspace/{USER}")
+LOOKUP    = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "its_identifier_file_babies_crb.csv")
 
-# batchWhisper.py cuts each recording into chunks of this many seconds,
-# starting at the beginning of the file.
+# Without a chunk list, chunks are this many seconds, from the start of the file.
 CHUNK_SECONDS = 300
 
-# The CSV's columns, in order. The README describes each one.
+# The combined CSV's columns, in order. The README describes each one.
 COLUMNS = [
     "participant_id", "source", "start_sec", "end_sec", "clock_start", "clock_end",
     "lena_block",
     # Whisper
-    "text", "whisper_chunk", "avg_logprob", "no_speech_prob", "compression_ratio",
+    "text", "whisper_chunk",
     # LENA
     "speaker", "lena_conversation", "adult_words", "child_utterances",
     "child_utterance_sec", "child_cry_vfx_sec", "conversational_turns",
     "average_db", "peak_db",
     # What overlaps each row
-    "cry_sec", "cry_score", "lena_speakers",
+    "cry_sec", "cry_score", "tv_sec", "tv_score", "lena_speakers",
+]
+# The .its CSV's columns.
+ITS_COLUMNS = [
+    "participant_id", "source", "start_sec", "end_sec", "clock_start", "clock_end",
+    "lena_block", "speaker", "lena_conversation", "adult_words", "child_utterances",
+    "child_utterance_sec", "child_cry_vfx_sec", "conversational_turns",
+    "average_db", "peak_db",
 ]
 # Rows that start at the same time are listed in this order.
-SOURCE_ORDER = {"lena_block": 0, "lena_segment": 1, "cry": 2, "whisper": 3}
+SOURCE_ORDER = {"lena_block": 0, "lena_segment": 1, "cry": 2, "tv": 3, "whisper": 4}
 
 
 class CombineError(Exception):
@@ -128,39 +152,111 @@ def id_number(participant_id):
     return participant_id.split("_", 1)[0]
 
 
+
+
+# ============================================================
+# CHUNKS
+# ============================================================
+def write_chunk_list(lengths, path):
+    """Write where each chunk starts and ends, from the chunks' lengths in
+    seconds. batchWhisper.py calls this when it starts transcribing."""
+    partial = path + ".partial"
+    with open(partial, "w", newline="") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(["chunk", "start_sec", "end_sec"])
+        start = 0.0
+        for chunk, length in enumerate(lengths):
+            writer.writerow([chunk, f"{start:.4f}", f"{start + length:.4f}"])
+            start += length
+    os.replace(partial, path)
+
+
+def chunk_times(transcripts, participant_id, chunk_dir=None):
+    """{chunk number: (start, end)} in seconds from the start of the recording,
+    and where they came from, or (None, ...) if they're 5-minute chunks.
+
+    Reads the chunk list next to the JSON files, or else the chunks' .wav
+    files. Without either, the chunks are from before the chunk list existed,
+    when every recording was cut into 5-minute chunks."""
+    path = os.path.join(transcripts, f"{participant_id}_chunks.csv")
+    if os.path.isfile(path):
+        with open(path, newline="") as f:
+            times = {int(r["chunk"]): (float(r["start_sec"]), float(r["end_sec"]))
+                     for r in csv.DictReader(f)}
+        source = os.path.basename(path)
+    else:
+        wavs = []
+        for p in glob.glob(os.path.join(chunk_dir or "", f"{participant_id}_audiochunk_*.wav")):
+            m = re.search(r"_audiochunk_(\d+)\.wav$", p)
+            if m:
+                wavs.append((int(m.group(1)), p))
+        if not chunk_dir or not wavs:
+            return None, "no chunk list, so 5-minute chunks"
+        times, start = {}, 0.0
+        for chunk, p in sorted(wavs):
+            with wave.open(p, "rb") as w:
+                length = w.getnframes() / w.getframerate()
+            times[chunk] = (start, start + length)
+            start += length
+        source = "the chunks' .wav files"
+    if not times:
+        return None, "an empty chunk list, so 5-minute chunks"
+    first = times[min(times)][1] - times[min(times)][0]
+    if first < CHUNK_SECONDS - 1:
+        return times, (f"{source}: the first chunk is {first:.0f} s, so the chunks "
+                       "follow the .its file's 5-minute blocks")
+    return times, f"{source}: the first chunk is {first:.0f} s, so 5-minute chunks"
+
+
 # ============================================================
 # WHISPER
 # ============================================================
-def read_whisper(folder, participant_id, recording_end=None):
-    """Rows for every Whisper segment in a participant's JSON folder.
-
-    Like combineTranscripts_JSON.R, but with each segment's time measured
-    from the start of the recording instead of the start of its chunk.
-    Whisper pads the end of each chunk with silence and sometimes invents
-    text there ("Music", or one word repeated every few seconds) with times
-    past the end of the chunk. Those would land on the next chunk's part of
-    the timeline, so segments that start after the end of their chunk (or of
-    the recording) are left out, and segments that run past the end of their
-    chunk are cut at it.
-    Returns (rows, chunk numbers found).
-    """
-    rows, chunks, dropped, cut = [], set(), 0, 0
+def whisper_files(folder):
+    """[(chunk number, path)] of the Whisper JSON files in a folder, in order."""
+    files = []
     for path in glob.glob(os.path.join(folder, "*.json")):
         m = re.search(r"_audiochunk_(\d+)\.json$", path)
         if not m:
             print(f"  [~] Skipping {os.path.basename(path)}: not a Whisper chunk file")
             continue
-        chunk = int(m.group(1))
+        files.append((int(m.group(1)), path))
+    return sorted(files)
+
+
+def load_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except ValueError:
+        raise CombineError(f"{path} is damaged (a job probably stopped while writing "
+                           "it). Delete it and run submit_whisper_subjects.sh to redo "
+                           "that chunk.")
+
+
+def read_whisper(folder, participant_id, recording_end=None, times=None):
+    """Rows for every Whisper segment in a participant's JSON folder.
+
+    Like combineTranscripts_JSON.R, but with each segment's time measured
+    from the start of the recording instead of the start of its chunk.
+    `times` gives each chunk's start and end; without it, chunks are 5
+    minutes. Whisper pads the end of each chunk with silence and sometimes
+    invents text there ("Music", or one word repeated every few seconds) with
+    times past the end of the chunk. Those would land on the next chunk's
+    part of the timeline, so segments that start after the end of their
+    chunk (or of the recording) are left out, and segments that run past the
+    end of their chunk are cut at it.
+    Returns (rows, chunk numbers found).
+    """
+    rows, chunks, dropped, cut = [], set(), 0, 0
+    for chunk, path in whisper_files(folder):
         chunks.add(chunk)
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        except ValueError:
-            raise CombineError(f"{path} is damaged (a job probably stopped while writing "
-                               "it). Delete it and run submit_whisper_subjects.sh to redo "
-                               "that chunk.")
-        offset = chunk * CHUNK_SECONDS
-        limit = offset + CHUNK_SECONDS
+        data = load_json(path)
+        if times is None:
+            offset, limit = chunk * CHUNK_SECONDS, (chunk + 1) * CHUNK_SECONDS
+        elif chunk in times:
+            offset, limit = times[chunk]
+        else:
+            continue                  # combine() reports it
         last_start = limit if recording_end is None else min(limit, recording_end)
         for seg in data.get("segments") or []:
             start, end = offset + float(seg["start"]), offset + float(seg["end"])
@@ -176,9 +272,6 @@ def read_whisper(folder, participant_id, recording_end=None):
                 "end": end,
                 "text": (seg.get("text") or "").strip(),
                 "whisper_chunk": chunk,
-                "avg_logprob": seg.get("avg_logprob"),
-                "no_speech_prob": seg.get("no_speech_prob"),
-                "compression_ratio": seg.get("compression_ratio"),
             })
     if dropped or cut:
         print(f"  [~] Whisper: left out {dropped} segments that start after the end of "
@@ -186,29 +279,74 @@ def read_whisper(folder, participant_id, recording_end=None):
     return rows, chunks
 
 
+def r_number(x):
+    """A number as R's write_csv writes it: 4240, or 4240.5."""
+    return str(int(x)) if float(x).is_integer() else repr(float(x))
+
+
+def write_r_transcripts(folder, out_path):
+    """Write the transcript the way combineTranscripts_JSON.R does: one row
+    per Whisper segment, with its JSON file's name and its times in
+    milliseconds from the start of its chunk, in chunk order."""
+    partial = out_path + ".partial"
+    with open(partial, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(["file", "start_time", "end_time", "text"])
+        for _, path in whisper_files(folder):
+            for seg in load_json(path).get("segments") or []:
+                writer.writerow([os.path.basename(path), r_number(1000 * seg["start"]),
+                                 r_number(1000 * seg["end"]), seg.get("text") or ""])
+    os.replace(partial, out_path)
+
+
 # ============================================================
-# CRY DETECTION
+# CRY AND TV DETECTION
 # ============================================================
-def read_cry(path):
-    """batchCryDetection.py's per-second cry predictions (0/1), and YAMNet's
-    "Baby cry, infant cry" score for each second (None for CSVs without one)."""
+def read_yamnet(path):
+    """batchCryDetection.py's per-second predictions (0/1) and scores:
+    {"cry": [...], "cry_score": [...], "tv": [...], "tv_score": [...]}.
+    Lists that the CSV has no columns for are None: CSVs from before TV
+    detection have no tv, and the oldest have no scores."""
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
-    cry = [int(row["cry"]) for row in rows]
-    scores = [float(row["baby_cry"]) for row in rows] if rows and "baby_cry" in rows[0] else None
-    return cry, scores
+    first = rows[0] if rows else {}
+    out = {"cry": [int(r["cry"]) for r in rows],
+           "cry_score": [float(r["baby_cry"]) for r in rows] if "baby_cry" in first else None,
+           "tv": [int(r["tv"]) for r in rows] if "tv" in first else None,
+           "tv_score": None}
+    if "television" in first:
+        out["tv_score"] = [max(float(r["television"]), float(r.get("radio") or 0))
+                           for r in rows]
+    return out
 
 
-def cry_episodes(cry):
-    """[(start, end)] of each run of seconds marked as crying."""
-    episodes, start = [], None
-    for second, value in enumerate(cry + [0]):
+def episodes(flags):
+    """[(start, end)] of each run of seconds marked 1."""
+    runs, start = [], None
+    for second, value in enumerate(flags + [0]):
         if value and start is None:
             start = second
         elif not value and start is not None:
-            episodes.append((start, second))
+            runs.append((start, second))
             start = None
-    return episodes
+    return runs
+
+
+def overlap_sec(runs, starts, a, b):
+    """Seconds of the runs that fall between a and b."""
+    total = 0.0
+    i = max(bisect.bisect_right(starts, a) - 1, 0)
+    while i < len(runs) and runs[i][0] < b:
+        total += max(0.0, min(b, runs[i][1]) - max(a, runs[i][0]))
+        i += 1
+    return total
+
+
+def max_score(scores, a, b):
+    """The highest score among the seconds between a and b."""
+    s0 = min(max(int(math.floor(a)), 0), len(scores) - 1)
+    s1 = min(max(int(math.ceil(b)), s0 + 1), len(scores))
+    return max(scores[s0:s1])
 
 
 # ============================================================
@@ -333,32 +471,30 @@ class Its:
         return "; ".join(f"{label} {sec:.2f}" for label, sec in ranked if sec >= 0.005)
 
 
-def read_lookup_tables(its_dir):
-    """Rows of every lookup table in its_dir: any CSV with ExternalReferenceID
-    and ITS_File_Name columns, such as its_identifier_file_babies_crb.csv."""
-    rows = []
-    for path in sorted(glob.glob(os.path.join(its_dir, "*.csv"))):
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            fields = {name.strip(): name for name in (reader.fieldnames or [])}
-            if "ExternalReferenceID" not in fields or "ITS_File_Name" not in fields:
-                continue
-            for row in reader:
-                rows.append(((row[fields["ExternalReferenceID"]] or "").strip(),
-                             (row[fields["ITS_File_Name"]] or "").strip(),
-                             os.path.basename(path)))
-    return rows
+def read_lookup_table(path):
+    """[(ExternalReferenceID, ITS_File_Name)] from the lookup table, such as
+    its_identifier_file_babies_crb.csv in this folder."""
+    if not os.path.isfile(path):
+        raise CombineError(f"no lookup table at {path}")
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fields = {name.strip(): name for name in (reader.fieldnames or [])}
+        if "ExternalReferenceID" not in fields or "ITS_File_Name" not in fields:
+            raise CombineError(f"{path} has no ExternalReferenceID and ITS_File_Name columns")
+        return [((row[fields["ExternalReferenceID"]] or "").strip(),
+                 (row[fields["ITS_File_Name"]] or "").strip()) for row in reader]
 
 
-def find_its(participant_id, its_dir):
+def find_its(participant_id, its_dir, lookup=LOOKUP, timepoint=""):
     """The path of a participant's .its file in its_dir.
 
     A file named <participant>.its wins. Otherwise the lookup table finds it:
     the row whose ExternalReferenceID starts with the participant's ID number
     (1243_12mo for 1243_029768) and whose ITS_File_Name ends with the same
     recorder number (20211105_123641_029768). The same child can wear the
-    same recorder at more than one age, so if several of those files are in
-    its_dir, you choose (see the error message).
+    same recorder at more than one age; then the row for `timepoint` (12-mo
+    matches 1243_12mo) is used, and otherwise you choose (see the error
+    message).
     """
     child = id_number(participant_id)
     recorder = participant_id.split("_", 1)[1] if "_" in participant_id else ""
@@ -373,12 +509,8 @@ def find_its(participant_id, its_dir):
     if named:
         return named
 
-    tables = read_lookup_tables(its_dir)
-    if not tables:
-        raise CombineError(f"no .its file named {participant_id}.its, and no lookup table "
-                           f"(a CSV with ExternalReferenceID and ITS_File_Name columns) in {its_dir}")
     candidates = []
-    for external_id, its_name, _ in tables:
+    for external_id, its_name in read_lookup_table(lookup):
         m = re.match(r"\d+", external_id)
         name = its_name[:-4] if its_name.lower().endswith(".its") else its_name
         if m and m.group(0) == child and "_".join(name.split("_")[2:]) == recorder:
@@ -389,6 +521,10 @@ def find_its(participant_id, its_dir):
                            f"(ID {child}, recorder {recorder})")
     found = [(ext, name, on_disk(name)) for ext, name in candidates]
     present = [f for f in found if f[2]]
+    if len(present) > 1 and timepoint:
+        age = re.escape(f"{child}_{timepoint.replace('-', '')}")
+        at_age = [f for f in present if re.match(age + r"(_|$)", f[0])]
+        present = at_age or present
     if len(present) == 1:
         return present[0][2]
     if not present:
@@ -407,7 +543,7 @@ def find_its(participant_id, its_dir):
 # COMBINE
 # ============================================================
 def combine(participant_id, transcripts=None, cry_path=None, its_path=None,
-            skip_checks=False):
+            skip_checks=False, chunk_dir=None):
     """All rows for one participant, sorted by time. Sources set to None are
     left out. Raises CombineError if the sources don't fit together."""
     rows, problems = [], []
@@ -424,25 +560,40 @@ def combine(participant_id, transcripts=None, cry_path=None, its_path=None,
             problems.append(f"the .its file is from recorder {its.serial}, but "
                             f"{participant_id} wore recorder {recorder}")
 
-    cry, cry_scores = read_cry(cry_path) if cry_path else (None, None)
-    episodes = cry_episodes(cry) if cry is not None else []
-    if cry is not None:
-        print(f"  [*] Cry detection: {sum(cry)} of {len(cry)} seconds, "
-              f"{len(episodes)} episodes")
-        rows += [{"source": "cry", "start": float(a), "end": float(b)} for a, b in episodes]
-        if its and abs(len(cry) - its.duration) > 2:
-            problems.append(f"cry detection covers {len(cry)} seconds but the .its file "
+    yamnet = read_yamnet(cry_path) if cry_path else None
+    runs = {}                                    # "cry"/"tv" -> [(start, end)]
+    if yamnet:
+        n = len(yamnet["cry"])
+        for kind in ("cry", "tv"):
+            if yamnet[kind] is not None:
+                runs[kind] = episodes(yamnet[kind])
+                rows += [{"source": kind, "start": float(a), "end": float(b)}
+                         for a, b in runs[kind]]
+        print(f"  [*] Cry detection: {sum(yamnet['cry'])} of {n} seconds, "
+              f"{len(runs['cry'])} episodes")
+        if "tv" in runs:
+            print(f"  [*] TV detection: {sum(yamnet['tv'])} of {n} seconds, "
+                  f"{len(runs['tv'])} episodes")
+        else:
+            print(f"  [!] {os.path.basename(cry_path)} is from before TV detection, so "
+                  "the CSV has no TV; run submit_cry_subjects.sh to add it")
+        if its and abs(n - its.duration) > 2:
+            problems.append(f"cry detection covers {n} seconds but the .its file "
                             f"covers {its.duration:.0f}; is it the right .its file?")
 
     if transcripts:
-        end = its.duration if its else (len(cry) if cry is not None else None)
-        whisper, chunks = read_whisper(transcripts, participant_id, end)
+        recording_end = its.duration if its else (len(yamnet["cry"]) if yamnet else None)
+        times, note = chunk_times(transcripts, participant_id, chunk_dir)
+        print(f"  [*] Chunks: {note}")
+        whisper, chunks = read_whisper(transcripts, participant_id, recording_end, times)
         if not chunks:
             raise CombineError(f"no Whisper JSON files in {transcripts}")
-        if its:
+        if times is not None:
+            expected = len(times)
+        elif its:
             expected = math.ceil(its.duration / CHUNK_SECONDS - 1e-6)
-        elif cry is not None:
-            expected = math.ceil(len(cry) / CHUNK_SECONDS)
+        elif yamnet:
+            expected = math.ceil(len(yamnet["cry"]) / CHUNK_SECONDS)
         else:
             expected = max(chunks) + 1
         missing = sorted(set(range(expected)) - chunks)
@@ -453,7 +604,7 @@ def combine(participant_id, transcripts=None, cry_path=None, its_path=None,
                             f"(chunk {number_ranges(missing)})")
         if extra:
             problems.append(f"Whisper chunk {number_ranges(extra)} would start after the end "
-                            f"of the recording in the .its file; is it the right .its file?")
+                            f"of the recording; is it the right .its file?")
         rows += whisper
 
     if problems and not skip_checks:
@@ -463,7 +614,7 @@ def combine(participant_id, transcripts=None, cry_path=None, its_path=None,
         print(f"  [!] {p}")
 
     # Put everything on one timeline: what overlaps each row, and when it was.
-    cry_starts = [a for a, _ in episodes]
+    run_starts = {kind: [a for a, _ in r] for kind, r in runs.items()}
     for row in rows:
         row["participant_id"] = participant_id
         a, b = row["start"], row["end"]
@@ -472,36 +623,47 @@ def combine(participant_id, transcripts=None, cry_path=None, its_path=None,
             row.setdefault("lena_block", its.block_at(a))
             if row["source"] != "lena_segment":
                 row["lena_speakers"] = its.speakers_during(a, b)
-        if cry is not None and row["source"] != "cry":
-            overlap = 0.0
-            i = max(bisect.bisect_right(cry_starts, a) - 1, 0)
-            while i < len(episodes) and episodes[i][0] < b:
-                overlap += max(0.0, min(b, episodes[i][1]) - max(a, episodes[i][0]))
-                i += 1
-            row["cry_sec"] = fmt(overlap)
-        if cry_scores:
-            # The highest score among the seconds that the row touches
-            s0 = min(max(int(math.floor(a)), 0), len(cry_scores) - 1)
-            s1 = min(max(int(math.ceil(b)), s0 + 1), len(cry_scores))
-            row["cry_score"] = fmt(max(cry_scores[s0:s1]), 4)
+        for kind in runs:
+            if row["source"] != kind:
+                row[f"{kind}_sec"] = fmt(overlap_sec(runs[kind], run_starts[kind], a, b))
+            if yamnet[f"{kind}_score"]:
+                row[f"{kind}_score"] = fmt(max_score(yamnet[f"{kind}_score"], a, b), 4)
     rows.sort(key=lambda r: (r["start"], SOURCE_ORDER[r["source"]], r["end"]))
     return rows
 
 
-def write_rows(rows, out_path):
+def write_rows(rows, out_path, columns=COLUMNS):
     """Write the CSV. The file appears only when it's complete."""
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     partial = out_path + ".partial"
     with open(partial, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, lineterminator="\n")
-        writer.writerow(COLUMNS)
+        writer.writerow(columns)
         for row in rows:
             out = dict(row, start_sec=fmt(row["start"]), end_sec=fmt(row["end"]))
-            for key in ("avg_logprob", "no_speech_prob", "compression_ratio"):
-                if out.get(key) is not None:
-                    out[key] = fmt(out[key], 4)
-            writer.writerow(["" if out.get(c) is None else out[c] for c in COLUMNS])
+            writer.writerow(["" if out.get(c) is None else out[c] for c in columns])
     os.replace(partial, out_path)
+
+
+def write_outputs(pid, rows, out_path, transcripts, cry_path, its_path):
+    """Write the combined CSV, and next to it each source on its own."""
+    folder = os.path.dirname(os.path.abspath(out_path))
+    write_rows(rows, out_path)
+    written = [out_path]
+    if transcripts:
+        path = os.path.join(folder, f"{pid}_combined_transcripts.csv")
+        write_r_transcripts(transcripts, path)
+        written.append(path)
+    if cry_path:
+        path = os.path.join(folder, f"{pid}_cry_tv.csv")
+        shutil.copyfile(cry_path, path + ".partial")
+        os.replace(path + ".partial", path)
+        written.append(path)
+    if its_path:
+        path = os.path.join(folder, f"{pid}_its.csv")
+        write_rows([r for r in rows if r["source"].startswith("lena_")], path, ITS_COLUMNS)
+        written.append(path)
+    return written
 
 
 # ============================================================
@@ -509,22 +671,28 @@ def write_rows(rows, out_path):
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Combine Whisper, .its, and cry detection output into one CSV "
-                    "per recording.")
+        description="Combine Whisper, .its, and cry and TV detection output into one "
+                    "CSV per recording, plus one CSV per source.")
     parser.add_argument("participant_ids", nargs="+", metavar="participant_id")
     parser.add_argument("--data-root", default=DATA_ROOT,
-                        help="folder with transcriptOut, cryOut, and combinedOut "
-                             "(default: %(default)s)")
-    parser.add_argument("--its-dir", help="folder with the .its files and lookup table "
+                        help="folder with chunkedAudioInput and the <ID>_output "
+                             "folders (default: %(default)s)")
+    parser.add_argument("--its-dir", help="folder with the .its files "
                                           "(default: <data-root>/itsFiles)")
-    parser.add_argument("--cry-dir", help="default: <data-root>/cryOut")
-    parser.add_argument("--out-dir", help="default: <data-root>/combinedOut")
+    parser.add_argument("--lookup", default=LOOKUP,
+                        help="the .its lookup table (default: %(default)s)")
+    parser.add_argument("--timepoint", default="",
+                        help="the age, such as 6-mo, to choose between .its files when "
+                             "a child wore the same recorder at two ages")
     one = parser.add_argument_group("for one participant, files anywhere")
     one.add_argument("--transcripts", help="folder with the participant's Whisper JSON files")
-    one.add_argument("--cry", help="the participant's cry detection CSV")
+    one.add_argument("--chunks", help="folder with the participant's chunk .wav files, if "
+                                      "the JSON folder has no chunk list")
+    one.add_argument("--cry", help="the participant's cry and TV detection CSV")
     one.add_argument("--its", help="the participant's .its file")
-    one.add_argument("--out", help="where to write the combined CSV")
-    parser.add_argument("--no-cry", action="store_true", help="leave cry detection out")
+    one.add_argument("--out", help="where to write the combined CSV; the other CSVs go "
+                                   "next to it")
+    parser.add_argument("--no-cry", action="store_true", help="leave cry and TV detection out")
     parser.add_argument("--no-its", action="store_true", help="leave the .its data out")
     parser.add_argument("--skip-checks", action="store_true",
                         help="write the CSV even if Whisper chunks are missing, the "
@@ -534,25 +702,27 @@ def main():
                         help="redo participants whose combined CSV already exists")
     args = parser.parse_args()
 
-    single = [o for o in ("transcripts", "cry", "its", "out") if getattr(args, o)]
+    single = [o for o in ("transcripts", "chunks", "cry", "its", "out") if getattr(args, o)]
     if single and len(args.participant_ids) > 1:
         parser.error(f"--{single[0]} names one participant's file; give one participant ID")
     its_dir = args.its_dir or os.path.join(args.data_root, "itsFiles")
-    cry_dir = args.cry_dir or os.path.join(args.data_root, "cryOut")
-    out_dir = args.out_dir or os.path.join(args.data_root, "combinedOut")
 
     results = []
     for pid in args.participant_ids:
         id4 = pid[:4]
+        output = os.path.join(args.data_root, f"{pid.split('_')[0]}_output")
         if args.transcripts:
             transcripts = args.transcripts
+            chunk_dir = args.chunks
             # combineTranscripts_JSON.R wrote next to the JSON folder
             out_path = args.out or os.path.join(
                 os.path.dirname(os.path.abspath(transcripts)), f"{pid}_combined.csv")
         else:
-            transcripts = os.path.join(args.data_root, "transcriptOut", id4, pid)
-            out_path = args.out or os.path.join(out_dir, id4, f"{pid}_combined.csv")
-        cry_path = None if args.no_cry else (args.cry or os.path.join(cry_dir, id4, f"{pid}_cry.csv"))
+            transcripts = os.path.join(output, "transcriptOut", pid)
+            chunk_dir = args.chunks or os.path.join(args.data_root, "chunkedAudioInput", id4, pid)
+            out_path = args.out or os.path.join(output, "combinedOut", f"{pid}_combined.csv")
+        cry_path = None if args.no_cry else (
+            args.cry or os.path.join(output, "cryOut", f"{pid}_cry.csv"))
 
         print(f"[*] {pid}")
         if os.path.exists(out_path) and not args.overwrite:
@@ -563,20 +733,22 @@ def main():
             if not os.path.isdir(transcripts):
                 raise CombineError(f"no Whisper transcripts folder: {transcripts}")
             if cry_path and not os.path.isfile(cry_path):
-                raise CombineError(f"no cry detection output yet: {cry_path} "
+                raise CombineError(f"no cry and TV detection output yet: {cry_path} "
                                    "(run submit_cry_subjects.sh, or add --no-cry)")
             its_path = None
             if not args.no_its:
-                its_path = args.its or find_its(pid, its_dir)
+                its_path = args.its or find_its(pid, its_dir, args.lookup, args.timepoint)
                 if not os.path.isfile(its_path):
                     raise CombineError(f"no such .its file: {its_path}")
-            rows = combine(pid, transcripts, cry_path, its_path, args.skip_checks)
-            write_rows(rows, out_path)
+            rows = combine(pid, transcripts, cry_path, its_path, args.skip_checks, chunk_dir)
+            written = write_outputs(pid, rows, out_path, transcripts, cry_path, its_path)
         except (CombineError, ValueError, KeyError) as e:
             print(f"  [!] Not combined: {e}")
             results.append((pid, "not combined"))
             continue
         print(f"  [✓] {len(rows)} rows: {out_path}")
+        for path in written[1:]:
+            print(f"      also {os.path.basename(path)}")
         results.append((pid, "combined"))
 
     if len(results) > 1:

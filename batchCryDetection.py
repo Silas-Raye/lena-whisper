@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-batchCryDetection.py — ACCRE cry detection with YAMNet
+batchCryDetection.py — ACCRE cry and TV detection with YAMNet
 For a single participant: scores every second of the recording for infant
-crying with YAMNet, Google's sound event classifier.
+crying and for TV or radio with YAMNet, Google's sound event classifier.
 
 submit_cry_subjects.sh runs this script for you. To run it by hand inside a
 CPU job:
     python batchCryDetection.py <participant_id>
     e.g. python batchCryDetection.py 1243_029768
 
-It reads the same 5-minute chunks that Whisper transcribes (16 kHz, mono),
+It reads the same chunks that Whisper transcribes (16 kHz, mono),
 which the first Whisper job for a participant cuts from the recording, and
 writes one row per second of the recording:
     /nobackup/userspace/<VUNetID>/chunkedAudioInput/<ID4>/<participant>/   input
-    /nobackup/userspace/<VUNetID>/cryOut/<ID4>/<participant>_cry.csv       output
+    /nobackup/userspace/<VUNetID>/<ID>_output/cryOut/<participant>_cry.csv  output
 
     second          seconds since the start of the recording (0, 1, 2, ...)
-    cry             1 if baby_cry is at least the threshold, otherwise 0
+    cry             1 if baby_cry is at least the cry threshold, otherwise 0
+    tv              1 if television or radio is at least the TV threshold
     baby_cry        YAMNet's score for "Baby cry, infant cry", from 0 to 1
     crying_sobbing  its score for "Crying, sobbing" (crying at any age)
     whimper         its score for "Whimper"
+    television      its score for "Television"
+    radio           its score for "Radio"
 
 YAMNet scores 0.96-second windows that start every 0.48 seconds; a second's
-score is the highest score among the windows centred in it. The threshold is
-CRY_THRESHOLD in config.sh. YAMNet is in cry_model/yamnet (Apache 2.0); see
+score is the highest score among the windows centred in it. The thresholds
+are CRY_THRESHOLD and TV_THRESHOLD in config.sh. YAMNet is in cry_model/yamnet (Apache 2.0); see
 cry_model/README.md.
 
 Other ways to run it:
@@ -53,10 +56,10 @@ import numpy as np
 USER       = os.environ.get("USER") or getpass.getuser()
 DATA_ROOT  = os.environ.get("LW_DATA_ROOT", f"/nobackup/userspace/{USER}")
 CHUNK_ROOT = os.path.join(DATA_ROOT, "chunkedAudioInput")
-CRY_ROOT   = os.environ.get("LW_CRY_DIR", os.path.join(DATA_ROOT, "cryOut"))
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR  = os.environ.get("LW_CRY_MODEL", os.path.join(SCRIPT_DIR, "cry_model", "yamnet"))
 THRESHOLD  = float(os.environ.get("LW_CRY_THRESHOLD", "0.5"))
+TV_THRESHOLD = float(os.environ.get("LW_TV_THRESHOLD", "0.5"))
 THREADS    = int(os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 1)
 
 # ============================================================
@@ -70,7 +73,11 @@ CLASSES = {
     "baby_cry":       (20, "Baby cry, infant cry"),
     "crying_sobbing": (19, "Crying, sobbing"),
     "whimper":        (21, "Whimper"),
+    "television":     (518, "Television"),
+    "radio":          (519, "Radio"),
 }
+# The scores that make a second count as TV: the highest of these
+TV_COLUMNS = ["television", "radio"]
 
 
 # ============================================================
@@ -131,10 +138,9 @@ def list_chunks(folder):
 def score_chunks(chunks, model, log=print):
     """Each second's highest YAMNet scores, for the classes in CLASSES.
 
-    The chunks are consecutive pieces of one recording. ffmpeg cuts them
-    within a few hundredths of a second of every 5 minutes, so the windows
-    are placed as if YAMNet ran on the whole recording at once: every 0.48 s
-    from its start. Each chunk gives the windows that start in it, completed
+    The chunks are consecutive pieces of one recording, of any lengths, so
+    the windows are placed as if YAMNet ran on the whole recording at once:
+    every 0.48 s from its start. Each chunk gives the windows that start in it, completed
     with audio from the start of the next chunk.
     """
     import soundfile as sf
@@ -170,18 +176,29 @@ def score_chunks(chunks, model, log=print):
     return best
 
 
-def write_csv(best, out_path, threshold=THRESHOLD):
-    """Write one row per second. The file appears only when it's complete."""
+def write_csv(best, out_path, threshold=THRESHOLD, tv_threshold=TV_THRESHOLD):
+    """Write one row per second. The file appears only when it's complete.
+    Returns (seconds of crying, seconds of TV)."""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     partial = out_path + ".partial"
-    scores = np.round(best.astype(np.float64), 4)    # cry follows the score as written
+    scores = np.round(best.astype(np.float64), 4)    # cry and tv follow the scores as written
+    names = list(CLASSES)
+    cry = scores[:, names.index("baby_cry")] >= threshold
+    tv = scores[:, [names.index(c) for c in TV_COLUMNS]].max(axis=1) >= tv_threshold
     with open(partial, "w", newline="") as f:
         writer = csv.writer(f, lineterminator="\n")
-        writer.writerow(["second", "cry"] + list(CLASSES))
+        writer.writerow(["second", "cry", "tv"] + names)
         for second, row in enumerate(scores):
-            writer.writerow([second, int(row[0] >= threshold)] + [f"{v:.4f}" for v in row])
+            writer.writerow([second, int(cry[second]), int(tv[second])]
+                            + [f"{v:.4f}" for v in row])
     os.replace(partial, out_path)
-    return int(np.sum(scores[:, 0] >= threshold))
+    return int(cry.sum()), int(tv.sum())
+
+
+def has_tv(path):
+    """Whether a CSV this script wrote has the TV columns (older ones don't)."""
+    with open(path, newline="") as f:
+        return "tv" in next(csv.reader(f), [])
 
 
 # ============================================================
@@ -189,7 +206,7 @@ def write_csv(best, out_path, threshold=THRESHOLD):
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Score each second of a recording for infant crying with YAMNet.")
+        description="Score each second of a recording for infant crying and TV with YAMNet.")
     parser.add_argument("participant_id", nargs="?", help="for example 1243_029768")
     parser.add_argument("--chunks", help="a folder of Whisper chunks to use instead of a "
                                          "participant's")
@@ -211,11 +228,14 @@ def main():
     elif args.participant_id:
         pid = args.participant_id
         folder = os.path.join(CHUNK_ROOT, pid[:4], pid)
-        out_path = os.path.join(CRY_ROOT, pid[:4], f"{pid}_cry.csv")
+        out_path = os.path.join(DATA_ROOT, f"{pid.split('_')[0]}_output", "cryOut",
+                                f"{pid}_cry.csv")
         label = pid
         if os.path.exists(out_path) and not args.overwrite:
-            print(f"[~] Already done: {out_path}")
-            return
+            if has_tv(out_path):
+                print(f"[~] Already done: {out_path}")
+                return
+            print(f"[*] {out_path} is from before TV detection; redoing it")
     else:
         parser.error("give a participant ID, --chunks, or --check")
 
@@ -224,16 +244,17 @@ def main():
     print(f"[*] Participant:  {label}")
     print(f"[*] Chunks:       {len(chunks)} in {folder}")
     print(f"[*] Output:       {out_path}")
-    print(f"[*] Threshold:    baby_cry >= {THRESHOLD}")
+    print(f"[*] Thresholds:   baby_cry >= {THRESHOLD}, television or radio >= {TV_THRESHOLD}")
     print(f"[*] CPU threads:  {THREADS}")
     print(f"{'='*50}\n")
 
     t_start = time.time()
     model = load_yamnet()
     best = score_chunks(chunks, model)
-    n_cry = write_csv(best, out_path)
-    print(f"\n[✓] {n_cry} of {len(best)} seconds at or above the threshold "
-          f"({100.0 * n_cry / max(len(best), 1):.1f}%)")
+    n_cry, n_tv = write_csv(best, out_path)
+    n = max(len(best), 1)
+    print(f"\n[✓] Crying: {n_cry} of {len(best)} seconds ({100.0 * n_cry / n:.1f}%)")
+    print(f"    TV:     {n_tv} of {len(best)} seconds ({100.0 * n_tv / n:.1f}%)")
     print(f"    Output: {out_path}")
     print(f"    Took {(time.time() - t_start) / 60:.1f} minutes")
 

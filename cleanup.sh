@@ -4,14 +4,15 @@
 #
 # Usage (on the ACCRE gateway):
 #   bash ~/lena-whisper/cleanup.sh <participant_id> [<participant_id> ...]
+#   (an ID like 1006 means each of that child's recordings on ACCRE)
 #   bash ~/lena-whisper/cleanup.sh              (only the tidy-up)
 #
 # For each participant, after you confirm, it deletes:
 #   rawAudio/<participant>.wav, rawAudio/<ID4>/<participant>.wav   the recording
-#   chunkedAudioInput/<ID4>/<participant>/                         5-minute chunks
-#   transcriptOut/<ID4>/<participant>/                             transcripts
-#   cryOut/<ID4>/<participant>_cry.csv                             cry detection
-#   combinedOut/<ID4>/<participant>_combined.csv                   combined CSV
+#   chunkedAudioInput/<ID4>/<participant>/                         chunks
+#   <ID>_output/transcriptOut/<participant>/                       transcripts
+#   <ID>_output/cryOut/<participant>_cry.csv                       cry and TV detection
+#   <ID>_output/combinedOut/<participant>_*.csv                    combined CSVs
 # and removes the ID from participant_ids.txt. It leaves the .its files in
 # itsFiles, which you may need for other recordings, and skips participants
 # with a job still queued or running.
@@ -58,14 +59,18 @@ remove_from_list() {
 
 # ---- 1. Participants -------------------------------------------------------
 pids=()
+ids=()
 for arg in "$@"; do
-    pid="${arg%.[wW][aA][vV]}"
+    id="${arg%.[wW][aA][vV]}"
     # Only plain IDs, so a typo can't turn into a path like "*" or "../".
-    if [[ ! "$pid" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{3,}$ ]]; then
-        echo "[X] '${arg}' doesn't look like a participant ID (for example 1243_029768)."
+    if [[ ! "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{3,}$ ]]; then
+        echo "[X] '${arg}' doesn't look like a participant ID (for example 1006)."
         exit 1
     fi
-    pids+=("$pid")
+    ids+=("$id")
+    while IFS= read -r pid; do
+        pids+=("$pid")
+    done < <(recording_ids <(echo "$id"))
 done
 
 if [ "${#pids[@]}" -gt 0 ]; then
@@ -83,10 +88,15 @@ if [ "${#pids[@]}" -gt 0 ]; then
         paths=(
             "${RAW_DIR}/${pid}.wav" "${RAW_DIR}/${id4}/${pid}.wav"
             "${CHUNK_DIR}/${id4}/${pid}"
-            "${OUT_DIR}/${id4}/${pid}"
+            "$(transcript_dir "$pid")"
             "$(cry_path "$pid")" "$(cry_path "$pid").partial"
             "$(combined_path "$pid")" "$(combined_path "$pid").partial"
         )
+        for f in "$(dirname "$(combined_path "$pid")")/${pid}"_*.csv; do
+            if [ -e "$f" ] && [ "$f" != "$(combined_path "$pid")" ]; then
+                paths+=("$f")
+            fi
+        done
         found=$(sizes "${paths[@]}")
         echo "    ${pid}:"
         if [ -n "$found" ]; then
@@ -117,11 +127,19 @@ if [ "${#pids[@]}" -gt 0 ]; then
             rm -rf -- "${to_delete[@]}"
             for pid in "${keep[@]}"; do
                 remove_from_list "$pid"
-                # Remove the <ID4> folders if they're now empty.
-                for dir in "$RAW_DIR" "$CHUNK_DIR" "$OUT_DIR" "$CRY_DIR" "$COMBINED_DIR"; do
-                    rmdir "${dir}/${pid:0:4}" 2>/dev/null || true
+                # Remove the <ID4> and <ID>_output folders if they're now empty.
+                out=$(output_dir "$pid")
+                for dir in "${RAW_DIR}/${pid:0:4}" "${CHUNK_DIR}/${pid:0:4}" \
+                        "${out}/transcriptOut" "${out}/cryOut" "${out}/combinedOut" "$out"; do
+                    rmdir "$dir" 2>/dev/null || true
                 done
                 echo "    [✓] Deleted ${pid}'s files and removed it from participant_ids.txt"
+            done
+            # An ID like 1006 leaves the list once none of its recordings is busy.
+            for id in "${ids[@]}"; do
+                if ! grep -qE "^${id}(_|$)" <<< "$busy"; then
+                    remove_from_list "$id"
+                fi
             done
         else
             echo "    Nothing deleted."
@@ -138,7 +156,7 @@ echo "[*] Tidying up leftovers..."
 # (Whisper's chunkedAudioInput/.../*_temp.wav files stay: they tell the next
 # job to redo chunking that stopped partway.)
 n=0
-for dir in "$CRY_DIR" "$COMBINED_DIR"; do
+for dir in "$DATA_ROOT"/*_output; do
     if [ -d "$dir" ]; then
         while IFS= read -r -d '' f; do
             rm -f -- "$f"

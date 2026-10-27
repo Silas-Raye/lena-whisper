@@ -11,7 +11,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 SHOW_DIR="${LW_DIR/#"$HOME"/"~"}"
 
-step() { printf "\n[%s/8] %s\n" "$1" "$2"; }
+step() { printf "\n[%s/7] %s\n" "$1" "$2"; }
 show() { echo "${1/#"$HOME"/"~"}"; }
 
 # ---- 0. Make sure we're on ACCRE --------------------------------------------
@@ -22,20 +22,9 @@ if [ ! -d "$(dirname "$DATA_ROOT")" ] || ! command -v sbatch >/dev/null; then
     exit 1
 fi
 
-# ---- 1. VUNetID -------------------------------------------------------------
-step 1 "Confirm your VUNetID"
-echo "    You're logged in to ACCRE as: ${USER}"
-echo "    Your files will go in:        ${DATA_ROOT}"
-read -r -p "    Is ${USER} your VUNetID? [Y/n] " answer || answer=""
-if [[ ! "${answer:-Y}" =~ ^[Yy] ]]; then
-    echo "[X] Log out, log back in with your own VUNetID, and run setup again:"
-    echo "      ssh <VUNetID>@login.accre.vu"
-    exit 1
-fi
-
-# ---- 2. SLURM accounts ------------------------------------------------------
-step 2 "Check access to the lab's SLURM accounts"
-for pair in "${SLURM_ACCOUNT}:GPU account (Whisper)" "${CRY_SLURM_ACCOUNT}:CPU account (cry detection)"; do
+# ---- 1. SLURM accounts ------------------------------------------------------
+step 1 "Check access to the lab's SLURM accounts"
+for pair in "${SLURM_ACCOUNT}:GPU account (Whisper)" "${CRY_SLURM_ACCOUNT}:CPU account (cry and TV detection)"; do
     account="${pair%%:*}"
     purpose="${pair#*:}"
     [ -n "$account" ] || continue
@@ -50,14 +39,15 @@ for pair in "${SLURM_ACCOUNT}:GPU account (Whisper)" "${CRY_SLURM_ACCOUNT}:CPU a
     fi
 done
 
-# ---- 3. Data folders --------------------------------------------------------
-step 3 "Create your data folders in /nobackup"
-mkdir -p "$RAW_DIR" "$CHUNK_DIR" "$OUT_DIR" "$CRY_DIR" "$COMBINED_DIR"
+# ---- 2. Data folders --------------------------------------------------------
+step 2 "Create your data folders in /nobackup"
+mkdir -p "$RAW_DIR" "$CHUNK_DIR"
 # Recordings are research data: only you can read your folder.
 chmod 700 "$DATA_ROOT"
-for dir in "$RAW_DIR" "$CHUNK_DIR" "$OUT_DIR" "$CRY_DIR" "$COMBINED_DIR"; do
+for dir in "$RAW_DIR" "$CHUNK_DIR"; do
     echo "    [✓] ${dir}"
 done
+echo "    Each child's results will go in ${DATA_ROOT}/<ID>_output/."
 if mkdir -p "$ITS_DIR" 2>/dev/null; then
     echo "    [✓] ${ITS_DIR}"
 else
@@ -65,22 +55,22 @@ else
 fi
 echo "        (Only you can open ${DATA_ROOT}.)"
 
-# ---- 4. Files in this folder ------------------------------------------------
-step 4 "Prepare ${SHOW_DIR}"
+# ---- 3. Files in this folder ------------------------------------------------
+step 3 "Prepare ${SHOW_DIR}"
 mkdir -p "${LW_DIR}/logs" "${LW_DIR}/runs"
 if [ ! -f "$LW_IDS_FILE" ]; then
     cat > "$LW_IDS_FILE" <<'EOF'
-# One participant ID per line: the recording's file name without .wav.
-# Lines that start with # are ignored. Example:
-# 1243_029768
+# One participant ID per line, for example 1006. Each ID stands for all of
+# that child's recordings at the TIMEPOINT in config.sh. Lines that start
+# with # are ignored.
 EOF
     echo "    [✓] Created participant_ids.txt"
 else
     echo "    [✓] participant_ids.txt already exists; left unchanged"
 fi
 
-# ---- 5. Whisper environment -------------------------------------------------
-step 5 "Set up the Whisper environment ($(show "$VENV_DIR"))"
+# ---- 4. Whisper environment -------------------------------------------------
+step 4 "Set up the Whisper environment ($(show "$VENV_DIR"))"
 set +eu   # ACCRE's environment scripts aren't written for strict mode
 if ! type setup_accre_software_stack >/dev/null 2>&1; then
     source /etc/profile >/dev/null 2>&1
@@ -122,8 +112,8 @@ else
     echo "    [✓] Whisper installed"
 fi
 
-# ---- 6. Whisper model -------------------------------------------------------
-step 6 "Download the Whisper ${WHISPER_MODEL} model (about 3 GB, once)"
+# ---- 5. Whisper model -------------------------------------------------------
+step 5 "Download the Whisper ${WHISPER_MODEL} model (about 3 GB, once)"
 # Downloading now keeps the first job from spending its GPU time on it.
 # Whisper checks the file and skips the download when it's already complete.
 if python - "$WHISPER_MODEL" <<'EOF'
@@ -143,8 +133,8 @@ set +u
 deactivate
 set -u
 
-# ---- 7. Cry detection -------------------------------------------------------
-step 7 "Set up cry detection with YAMNet ($(show "$CRY_VENV_DIR"))"
+# ---- 6. Cry and TV detection ------------------------------------------------
+step 6 "Set up cry and TV detection with YAMNet ($(show "$CRY_VENV_DIR"))"
 if [ ! -f "${CRY_VENV_DIR}/bin/activate" ]; then
     echo "    Creating the environment..."
     python3 -m venv "$CRY_VENV_DIR"
@@ -181,68 +171,60 @@ set +u
 deactivate
 set -u
 
-# ---- 8. Personalized copy commands ------------------------------------------
-step 8 "Write your copy commands to ${SHOW_DIR}/my_commands.txt"
-if [[ "$LW_DIR" == "$HOME"/* ]]; then
-    remote_repo="${LW_DIR#"$HOME"/}"   # scp paths without a leading / start in your home folder
-else
-    remote_repo="$LW_DIR"
-fi
-host="${USER}@login.accre.vu"
-mac_raw="/Volumes/HumphreysLab/Daily_2/LENA/LENA_raw/BABIES_CRB/<TIMEPOINT>_BABIES_LENA_Raw/<ID4>"
-mac_txt="/Volumes/HumphreysLab/Daily_2/LENA/LENA_transcripts/BABIES_CRB/<TIMEPOINT>_BABIES_LENA_transcripts/<ID4>"
-win_raw='X:/Daily_2/LENA/LENA_raw/BABIES_CRB/<TIMEPOINT>_BABIES_LENA_Raw/<ID4>'
-win_txt='X:/Daily_2/LENA/LENA_transcripts/BABIES_CRB/<TIMEPOINT>_BABIES_LENA_transcripts/<ID4>'
-win_txt_mkdir="${win_txt//\//\\}"   # cmd's mkdir needs backslashes
-
+# ---- 7. Your commands -------------------------------------------------------
+step 7 "Write your commands to ${SHOW_DIR}/my_commands.txt"
 cat > "${LW_DIR}/my_commands.txt" <<EOF
-Copy commands for ${USER}
+My commands (${USER})
 =====================================================================
-Run these on YOUR computer, not on ACCRE. Connect to the VPN and the
-lab server first. Then replace:
-  <TIMEPOINT>    the age folder, for example 12-mo
-  <ID4>          the first 4 digits of the ID, for example 1243
-  <PARTICIPANT>  the full ID, for example 1243_029768
-  <ITS_FOLDER>   the lab server folder with the .its files and lookup table
-  <ITS_FILE>     an .its file's name, for example 20211105_123641_029768
 
----------------------------------------------------------------------
-MAC (Terminal)
----------------------------------------------------------------------
-Upload a recording to ACCRE:
-  scp "${mac_raw}/<PARTICIPANT>.wav" ${host}:${RAW_DIR}/
+Run each step's commands on ACCRE, in order. Steps 2 and 7 print copy
+commands with your paths filled in; run those on YOUR computer.
 
-Upload your participant list (from the folder that contains it):
-  scp participant_ids.txt ${host}:${remote_repo}/participant_ids.txt
 
-Upload .its files and the lookup table:
-  scp "<ITS_FOLDER>/<ITS_FILE>.its" "<ITS_FOLDER>/its_identifier_file_babies_crb.csv" ${host}:${ITS_DIR}/
+1. List the participant IDs, one per line (for example 1006)
 
-Copy one participant's transcripts, combined CSV, and cry detection CSV
-to the lab server:
-  mkdir -p "${mac_txt}"
-  scp -r ${host}:${OUT_DIR}/<ID4>/<PARTICIPANT> "${mac_txt}/"
-  scp ${host}:${COMBINED_DIR}/<ID4>/<PARTICIPANT>_combined.csv "${mac_txt}/"
-  scp ${host}:${CRY_DIR}/<ID4>/<PARTICIPANT>_cry.csv "${mac_txt}/"
+       nano ${SHOW_DIR}/participant_ids.txt
 
----------------------------------------------------------------------
-WINDOWS (Command Prompt; X: is the drive you mapped the lab server to)
----------------------------------------------------------------------
-Upload a recording to ACCRE:
-  scp "${win_raw}/<PARTICIPANT>.wav" ${host}:${RAW_DIR}/
 
-Upload your participant list (from the folder that contains it):
-  scp participant_ids.txt ${host}:${remote_repo}/participant_ids.txt
+2. Copy the recordings and .its files to ACCRE
 
-Upload .its files and the lookup table:
-  scp "<ITS_FOLDER>/<ITS_FILE>.its" "<ITS_FOLDER>/its_identifier_file_babies_crb.csv" ${host}:${ITS_DIR}/
+       bash ${SHOW_DIR}/print_wav_commands.sh
+       bash ${SHOW_DIR}/print_its_commands.sh
 
-Copy one participant's transcripts, combined CSV, and cry detection CSV
-to the lab server (ignore mkdir's message if the folder already exists):
-  mkdir "${win_txt_mkdir}"
-  scp -r ${host}:${OUT_DIR}/<ID4>/<PARTICIPANT> "${win_txt}/"
-  scp ${host}:${COMBINED_DIR}/<ID4>/<PARTICIPANT>_combined.csv "${win_txt}/"
-  scp ${host}:${CRY_DIR}/<ID4>/<PARTICIPANT>_cry.csv "${win_txt}/"
+   Copy the .its files before step 3: transcription cuts each recording
+   into chunks that line up with its .its file's 5-minute blocks, and
+   uses plain 5-minute chunks if the .its file isn't there.
+
+
+3. Start transcribing
+
+       bash ${SHOW_DIR}/submit_whisper_subjects.sh
+
+
+4. Start cry and TV detection (once status.sh shows "in progress")
+
+       bash ${SHOW_DIR}/submit_cry_subjects.sh
+
+
+5. Check progress (run step 3 again after each round of jobs)
+
+       bash ${SHOW_DIR}/status.sh
+       bash ${SHOW_DIR}/cry_status.sh
+
+
+6. Combine the results
+
+       bash ${SHOW_DIR}/combine_subjects.sh
+
+
+7. Copy the results to the lab server
+
+       bash ${SHOW_DIR}/print_results_commands.sh
+
+
+8. Delete the finished participants' files from ACCRE
+
+       bash ${SHOW_DIR}/cleanup.sh <ID>
 EOF
 echo "    [✓] Saved. View it with: cat ${SHOW_DIR}/my_commands.txt"
 
@@ -250,10 +232,12 @@ echo "    [✓] Saved. View it with: cat ${SHOW_DIR}/my_commands.txt"
 cat <<EOF
 
 [✓] Setup complete. Next:
-    1. Copy recordings to ACCRE      (cat ${SHOW_DIR}/my_commands.txt)
-    2. List their IDs                (nano ${SHOW_DIR}/participant_ids.txt)
+    1. List the participant IDs      (nano ${SHOW_DIR}/participant_ids.txt)
+    2. Copy recordings and .its      (bash ${SHOW_DIR}/print_wav_commands.sh, print_its_commands.sh)
     3. Start transcribing            (bash ${SHOW_DIR}/submit_whisper_subjects.sh)
-    4. Start cry detection           (bash ${SHOW_DIR}/submit_cry_subjects.sh)
+    4. Start cry and TV detection    (bash ${SHOW_DIR}/submit_cry_subjects.sh)
     5. Check progress                (bash ${SHOW_DIR}/status.sh, cry_status.sh)
     6. Combine the results           (bash ${SHOW_DIR}/combine_subjects.sh)
+    7. Copy results to the server    (bash ${SHOW_DIR}/print_results_commands.sh)
+    All of these are in ${SHOW_DIR}/my_commands.txt.
 EOF

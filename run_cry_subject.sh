@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_cry_subject.sh — one SLURM array task = cry detection for one participant.
+# run_cry_subject.sh — one SLURM array task = cry and TV detection for one participant.
 #
 # Don't sbatch this file yourself. submit_cry_subjects.sh submits it and
 # supplies the account, partition, time limit, and log path from config.sh.
@@ -34,7 +34,7 @@ if [ -z "$SUBJ" ]; then
 fi
 
 echo "=============================="
-echo "Starting cry detection: ${SUBJ}"
+echo "Starting cry and TV detection: ${SUBJ}"
 echo "Array task:   ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 echo "Node:         ${SLURMD_NODENAME:-unknown}"
 echo "Time limit:   ${CRY_SLURM_TIME}"
@@ -42,15 +42,15 @@ echo "Start time:   $(date)"
 echo "=============================="
 
 export LW_DATA_ROOT="${DATA_ROOT}"
-export LW_CRY_DIR="${CRY_DIR}"
 export LW_CRY_MODEL="${CRY_MODEL}"
 export LW_CRY_THRESHOLD="${CRY_THRESHOLD}"
+export LW_TV_THRESHOLD="${TV_THRESHOLD}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 # -u writes output immediately, so the log shows progress while the job runs.
 python -u "${LW_DIR}/batchCryDetection.py" "${SUBJ}"
 
 echo "=============================="
-echo "Finished cry detection: ${SUBJ}"
+echo "Finished cry and TV detection: ${SUBJ}"
 echo "End time: $(date)"
 echo "=============================="

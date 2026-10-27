@@ -10,13 +10,27 @@
 DATA_ROOT="${LW_DATA_ROOT:-/nobackup/userspace/${USER}}"
 RAW_DIR="${DATA_ROOT}/rawAudio"
 CHUNK_DIR="${DATA_ROOT}/chunkedAudioInput"
-OUT_DIR="${DATA_ROOT}/transcriptOut"
-CRY_DIR="${DATA_ROOT}/cryOut"
-COMBINED_DIR="${DATA_ROOT}/combinedOut"
-# .its files from LENA, plus the lookup table that names each one's recording.
-# Only you can open DATA_ROOT, so to share one folder of .its files across the
-# lab, point this at a folder that everyone in the lab can read.
+# Each child's output goes in its own folder, DATA_ROOT/<ID>_output (for
+# example 1006_output), with transcriptOut, cryOut, and combinedOut inside.
+# lib.sh's output_dir and the Python scripts build these paths.
+# .its files from LENA. Only you can open DATA_ROOT, so to share one folder of
+# .its files across the lab, point this at a folder that everyone can read.
 ITS_DIR="${LW_ITS_DIR:-${DATA_ROOT}/itsFiles}"
+# The lookup table that names each .its file's recording. It's kept in the
+# repository; replace it with a newer export from the lab server when needed.
+LOOKUP_TABLE="${LW_DIR}/its_identifier_file_babies_crb.csv"
+
+# ---- The lab server ----------------------------------------------------------
+# The age the lab is processing now. It picks the lab server folders
+# (6-mo_BABIES_LENA_Raw) and the lookup table rows (1006_6mo).
+TIMEPOINT="6-mo"
+# Where the lab server is mounted on each kind of computer, and its folders.
+# The print_*_commands.sh scripts put these into the copy commands they print.
+SERVER_WIN="X:"
+SERVER_MAC="/Volumes/HumphreysLab"
+SERVER_RAW="Daily_2/LENA/LENA_raw/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_Raw"
+SERVER_ITS="Daily_2/LENA/LENA_raw/BABIES_CRB/ITS_files"
+SERVER_TXT="Daily_2/LENA/LENA_transcripts/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_transcripts"
 
 # ---- Software ---------------------------------------------------------------
 # Both Python environments live in the repository folder (LW_DIR, set by lib.sh).
@@ -27,9 +41,11 @@ CRY_VENV_DIR="${LW_DIR}/cry-env"
 # YAMNet, which comes with the repository (cry_model/README.md).
 CRY_MODEL="${LW_DIR}/cry_model/yamnet"
 # A second counts as crying when YAMNet's "Baby cry, infant cry" score is at
-# least this. The cry CSVs keep every second's score, so you can apply another
-# threshold later without rerunning; see the README section on cry detection.
+# least CRY_THRESHOLD, and as TV when its "Television" or "Radio" score is at
+# least TV_THRESHOLD. The CSVs keep every second's scores, so you can apply
+# other thresholds later without rerunning.
 CRY_THRESHOLD="0.5"
+TV_THRESHOLD="0.5"
 
 # ---- GPU job settings (Whisper) ----------------------------------------------
 # The lab currently has GPU access only through the shared debug QoS:
@@ -51,8 +67,8 @@ SLURM_CPUS="2"
 SLURM_MEM="16G"
 MAX_PARALLEL="10"   # most array tasks running at once
 
-# ---- CPU job settings (cry detection) ----------------------------------------
-# Cry detection doesn't need a GPU, so it runs on the regular CPU partition
+# ---- CPU job settings (cry and TV detection) ---------------------------------
+# Cry and TV detection doesn't need a GPU, so it runs on the regular CPU partition
 # with the lab's CPU account (the GPU account's name without _iacc) and
 # doesn't compete with Whisper for your one debug GPU. A 16-hour recording
 # took about 2 minutes with 2 CPUs and under 2 GB of memory in testing.

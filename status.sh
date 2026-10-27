@@ -37,12 +37,12 @@ while IFS= read -r pid; do
     elif [ "$state" != "done" ]; then
         n_left=$((n_left + 1))
     fi
-done < <(clean_ids "$LW_IDS_FILE")
+done < <(recording_ids "$LW_IDS_FILE")
 
 echo
 if [ "$n_missing" -gt 0 ]; then
     echo "${n_missing} participant(s) have no recording in ${RAW_DIR}."
-    echo "Upload them (README: Copy files between your computer and ACCRE)."
+    echo "Copy them: bash ${SHOW_DIR}/print_wav_commands.sh"
     echo
 fi
 jobs=$(squeue --me -h -r -n whisper_subject -o "%.18i %.8T %.10M %.10L %R" 2>/dev/null || true)
@@ -54,6 +54,6 @@ elif [ "$n_left" -gt 0 ]; then
     echo "No whisper tasks in the queue. To continue, run:"
     echo "    bash ${SHOW_DIR}/submit_whisper_subjects.sh"
 elif [ "$n_missing" -eq 0 ]; then
-    echo "Every participant is done. Copy the transcripts back to the lab"
-    echo "server (README: Copy files between your computer and ACCRE)."
+    echo "Every participant is done. Start cry and TV detection if it isn't done,"
+    echo "then combine the results: bash ${SHOW_DIR}/combine_subjects.sh"
 fi

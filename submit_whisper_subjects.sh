@@ -21,7 +21,7 @@ fi
 
 if [ ! -f "$LW_IDS_FILE" ] || [ -z "$(clean_ids "$LW_IDS_FILE")" ]; then
     echo "[X] ${SHOW_DIR}/participant_ids.txt has no participant IDs."
-    echo "    Add one ID per line (for example 1243_029768): nano ${SHOW_DIR}/participant_ids.txt"
+    echo "    Add one ID per line (for example 1006): nano ${SHOW_DIR}/participant_ids.txt"
     exit 1
 fi
 
@@ -50,7 +50,7 @@ while IFS= read -r pid; do
             esac
             printf "    %-16s task %-3s %s\n" "$pid" "$n_queued" "$note" ;;
     esac
-done < <(clean_ids "$LW_IDS_FILE")
+done < <(recording_ids "$LW_IDS_FILE")
 
 if [ "$n_queued" -eq 0 ]; then
     rm -f "$snapshot"

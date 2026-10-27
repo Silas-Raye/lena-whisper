@@ -1,14 +1,15 @@
 #!/bin/bash
-# submit_cry_subjects.sh — run cry detection for the participants in participant_ids.txt.
+# submit_cry_subjects.sh — run cry and TV detection for the participants in participant_ids.txt.
 #
 # Usage (on the ACCRE gateway):
 #   bash ~/lena-whisper/submit_cry_subjects.sh
 #
-# Submits one SLURM array job with one CPU task per participant. Cry
-# detection runs YAMNet on the 5-minute chunks that the first Whisper job cuts
-# from each recording, so it can start once transcription has started, and
-# runs alongside it. Participants that are already done or queued, or whose
-# recording isn't chunked yet, are skipped.
+# Submits one SLURM array job with one CPU task per participant. Cry and TV
+# detection runs YAMNet on the chunks that the first Whisper job cuts from
+# each recording, so it can start once transcription has started, and runs
+# alongside it. Participants that are already done or queued, or whose
+# recording isn't chunked yet, are skipped. Cry CSVs from before TV detection
+# was added are redone.
 
 set -euo pipefail
 # shellcheck source=lib.sh
@@ -17,7 +18,7 @@ cd "$LW_DIR"
 SHOW_DIR="${LW_DIR/#"$HOME"/"~"}"   # shorter path for messages
 
 if [ ! -f "${CRY_VENV_DIR}/bin/activate" ]; then
-    echo "[X] Cry detection isn't set up yet. Run: bash ${SHOW_DIR}/setup.sh"
+    echo "[X] Cry and TV detection isn't set up yet. Run: bash ${SHOW_DIR}/setup.sh"
     exit 1
 fi
 
@@ -29,7 +30,7 @@ fi
 
 if [ ! -f "$LW_IDS_FILE" ] || [ -z "$(clean_ids "$LW_IDS_FILE")" ]; then
     echo "[X] ${SHOW_DIR}/participant_ids.txt has no participant IDs."
-    echo "    Add one ID per line (for example 1243_029768): nano ${SHOW_DIR}/participant_ids.txt"
+    echo "    Add one ID per line (for example 1006): nano ${SHOW_DIR}/participant_ids.txt"
     exit 1
 fi
 
@@ -51,7 +52,7 @@ while IFS= read -r pid; do
             printf "    %-16s no recording in %s, skipping\n" "$pid" "$RAW_DIR" ;;
         waiting)
             printf "    %-16s not chunked yet: run submit_whisper_subjects.sh first, skipping\n" "$pid" ;;
-        ready)
+        ready|old)
             if grep -qxF "$pid" <<< "$queued"; then
                 printf "    %-16s already queued or running, skipping\n" "$pid"
             else
@@ -60,7 +61,7 @@ while IFS= read -r pid; do
                 printf "    %-16s task %s\n" "$pid" "$n_queued"
             fi ;;
     esac
-done < <(clean_ids "$LW_IDS_FILE")
+done < <(recording_ids "$LW_IDS_FILE")
 
 if [ "$n_queued" -eq 0 ]; then
     rm -f "$snapshot"
@@ -71,7 +72,7 @@ fi
 # A queued task whose participant couldn't be read might be one of these.
 if grep -qxF "?" <<< "$queued"; then
     echo
-    echo "[!] You have cry detection tasks in the queue, and for some of them"
+    echo "[!] You have cry and TV detection tasks in the queue, and for some of them"
     echo "    it isn't clear which participant they're for (squeue --me -r)."
     read -r -p "    Submit anyway? [y/N] " answer || answer=""
     if [[ ! "$answer" =~ ^[Yy] ]]; then

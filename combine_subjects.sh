@@ -1,6 +1,7 @@
 #!/bin/bash
-# combine_subjects.sh — make the combined CSV for each participant in
-# participant_ids.txt whose transcription and cry detection are done.
+# combine_subjects.sh — make the combined CSV, and one CSV per source (Whisper,
+# cry and TV detection, .its), for each participant in participant_ids.txt
+# whose transcription and cry and TV detection are done.
 #
 # Usage (on the ACCRE gateway):
 #   bash ~/lena-whisper/combine_subjects.sh
@@ -58,22 +59,22 @@ while IFS= read -r pid; do
         missing)
             # The recording and chunks may be gone while the transcripts are
             # still here; combineTranscripts.py checks that they're complete.
-            if [ ! -d "${OUT_DIR}/${pid:0:4}/${pid}" ]; then
+            if [ ! -d "$(transcript_dir "$pid")" ]; then
                 printf "    %-16s no recording or transcripts in %s\n" "$pid" "$DATA_ROOT"
                 continue
             fi ;;
     esac
-    if [ ! -f "$(cry_path "$pid")" ]; then
+    if ! cry_done "$pid"; then
         if grep -qxF "$pid" <<< "$queued_cry"; then
-            printf "    %-16s waiting for cry detection (queued or running)\n" "$pid"
+            printf "    %-16s waiting for cry and TV detection (queued or running)\n" "$pid"
         else
-            printf "    %-16s waiting for cry detection (run submit_cry_subjects.sh)\n" "$pid"
+            printf "    %-16s waiting for cry and TV detection (run submit_cry_subjects.sh)\n" "$pid"
         fi
         continue
     fi
     printf "    %-16s ready\n" "$pid"
     ready+=("$pid")
-done < <(clean_ids "$LW_IDS_FILE")
+done < <(recording_ids "$LW_IDS_FILE")
 
 if [ "${#ready[@]}" -eq 0 ]; then
     echo "[✓] Nothing to combine right now."
@@ -84,14 +85,14 @@ echo
 status=0
 "$python" "${LW_DIR}/combineTranscripts.py" \
     --data-root "$DATA_ROOT" --its-dir "$ITS_DIR" \
-    --cry-dir "$CRY_DIR" --out-dir "$COMBINED_DIR" "$@" "${ready[@]}" || status=$?
+    --lookup "$LOOKUP_TABLE" --timepoint "$TIMEPOINT" "$@" "${ready[@]}" || status=$?
 
 echo
 if [ "$status" -eq 0 ]; then
-    echo "[✓] Done. Copy the combined CSVs to the lab server"
-    echo "    (README: Copy files between your computer and ACCRE)."
+    echo "[✓] Done. To copy the results to the lab server, run:"
+    echo "    bash ${SHOW_DIR}/print_results_commands.sh"
 else
     echo "[!] Some participants weren't combined; the messages above say why."
-    echo "    .its files go in ${ITS_DIR/#"$HOME"/"~"}/ (README: Add the .its files)."
+    echo "    .its files go in ${ITS_DIR/#"$HOME"/"~"}/ (bash ${SHOW_DIR}/print_its_commands.sh)."
 fi
 exit "$status"

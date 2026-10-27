@@ -21,6 +21,26 @@ clean_ids() {
         | awk 'NF && !seen[$0]++'
 }
 
+# Print the recording IDs that a participant list stands for, one per line.
+# A line like 1006 means each of that child's recordings on ACCRE
+# (1006_029792, 1006_029795, ...), found from their recordings, chunks, or
+# transcripts. A full recording ID like 1006_029795 means just that one. An ID
+# with no files on ACCRE is printed as is, so the scripts report it missing.
+recording_ids() {
+    local id found
+    clean_ids "$1" | while IFS= read -r id; do
+        if [[ "$id" == *_* ]]; then
+            echo "$id"
+            continue
+        fi
+        found=$(for f in "${RAW_DIR}/${id:0:4}/${id}"_*.wav "${RAW_DIR}/${id}"_*.wav \
+                         "${CHUNK_DIR}/${id:0:4}/${id}"_* "$(output_dir "$id")/transcriptOut/${id}"_*; do
+                    if [ -e "$f" ]; then basename "$f" .wav; fi
+                done | sort -u)
+        echo "${found:-$id}"
+    done | awk '!seen[$0]++'
+}
+
 # Count the arguments that are existing files. An unmatched glob stays a
 # literal pattern, which doesn't exist, so it counts as 0.
 count_files() {
@@ -43,20 +63,35 @@ raw_path() {
     done
 }
 
-# Print where a participant's cry detection CSV and combined CSV go.
-cry_path()      { echo "${CRY_DIR}/${1:0:4}/${1}_cry.csv"; }
-combined_path() { echo "${COMBINED_DIR}/${1:0:4}/${1}_combined.csv"; }
+# Print where a participant's output goes. Each child has one folder,
+# DATA_ROOT/<ID>_output, named for the part of the ID before the "_"
+# (1006_output for 1006_029795).
+output_dir()     { echo "${DATA_ROOT}/${1%%_*}_output"; }
+transcript_dir() { echo "$(output_dir "$1")/transcriptOut/${1}"; }
+cry_path()       { echo "$(output_dir "$1")/cryOut/${1}_cry.csv"; }
+combined_path()  { echo "$(output_dir "$1")/combinedOut/${1}_combined.csv"; }
 
-# Print the cry detection state of one participant. Cry detection reads the
-# 5-minute chunks that the first Whisper job cuts from the recording.
+# Succeed if a participant's cry CSV exists and has the TV columns, which
+# CSVs from before TV detection was added don't have.
+cry_done() {
+    [ -f "$(cry_path "$1")" ] && head -n 1 "$(cry_path "$1")" | grep -q ',tv,'
+}
+
+# Print the cry and TV detection state of one participant. It reads the
+# chunks that the first Whisper job cuts from the recording.
 #   missing   no recording or chunks on ACCRE
 #   waiting   recording uploaded, not chunked yet
-#   ready     chunked, cry detection not run yet
-#   done      the cry CSV exists
+#   ready     chunked, cry and TV detection not run yet
+#   old       the cry CSV is from before TV detection; run it again
+#   done      the cry CSV exists, with TV
 cry_state() {
     local state
-    if [ -f "$(cry_path "$1")" ]; then
+    if cry_done "$1"; then
         echo "done"
+        return
+    fi
+    if [ -f "$(cry_path "$1")" ]; then
+        echo "old"
         return
     fi
     read -r state _ <<< "$(participant_status "$1")"
@@ -88,6 +123,20 @@ queued_participants() {
     done
 }
 
+# Print the lookup table's .its file names for a child at TIMEPOINT, one per
+# line: the rows whose ExternalReferenceID is <ID4>_<age> (1006_6mo, also
+# 1006_6mo_Pilot). With a full recording ID, only that recorder's files.
+its_names() {
+    local id4="${1%%_*}" recorder="" age="${TIMEPOINT//-/}"
+    [[ "$1" == *_* ]] && recorder="${1#*_}"
+    sed -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' "$LOOKUP_TABLE" \
+        | awk -F, -v ref="${id4}_${age}" -v rec="$recorder" '
+            NR > 1 && ($1 == ref || index($1, ref "_") == 1) && $3 != "" {
+                name = $3; sub(/\.its$/, "", name)
+                if (rec == "" || name ~ ("_" rec "$")) print name
+            }'
+}
+
 # Print "<state> <chunks transcribed> <total chunks>" for one participant.
 # States:
 #   missing       no recording on ACCRE
@@ -98,7 +147,8 @@ queued_participants() {
 participant_status() {
     local pid="$1"
     local cdir="${CHUNK_DIR}/${pid:0:4}/${pid}"
-    local odir="${OUT_DIR}/${pid:0:4}/${pid}"
+    local odir
+    odir=$(transcript_dir "$pid")
     local n_chunks n_json
     n_chunks=$(count_files "${cdir}/${pid}_audiochunk_"*.wav)
     n_json=$(count_files "${odir}/${pid}_audiochunk_"*.json)
