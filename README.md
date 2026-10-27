@@ -88,20 +88,22 @@ run `cat ~/lena-whisper/my_commands.txt`.
    each recording into chunks that line up with LENA's 5-minute blocks in
    the `.its` file; without the `.its` file, it uses plain 5-minute chunks.
 
-4. Start transcription:
+4. You may need to restart your shell, terminal, or command prompt and reconnect to ACCRE between steps 3. and 5.
+
+5. Start transcription:
 
    ```bash
    bash ~/lena-whisper/submit_whisper_subjects.sh
    ```
 
-5. Once `status.sh` shows a recording as `in progress`, start cry and TV
+6. Once `status.sh` shows a recording as `in progress`, start cry and TV
    detection:
 
    ```bash
    bash ~/lena-whisper/submit_cry_subjects.sh
    ```
 
-6. Check progress, and run `submit_whisper_subjects.sh` again after each
+7. Check progress, and run `submit_whisper_subjects.sh` again after each
    round of jobs until every recording shows `done` (see
    [Why you submit more than once](#why-you-submit-more-than-once)):
 
@@ -110,22 +112,22 @@ run `cat ~/lena-whisper/my_commands.txt`.
    bash ~/lena-whisper/cry_status.sh   # cry and TV detection
    ```
 
-7. Combine the results:
+8. Combine the results:
 
    ```bash
    bash ~/lena-whisper/combine_subjects.sh
    ```
 
-8. Copy the results to the lab server. On ACCRE, run the following command,
+9. Copy the results to the lab server. On ACCRE, run the following command,
    then paste the printed commands into a terminal on your own computer:
 
    ```bash
    bash ~/lena-whisper/print_results_commands.sh
    ```
 
-9. In the tracker, update the recordings' status.
+10. In the tracker, update the recordings' status.
 
-10. Delete the participants' files from ACCRE:
+11. Delete the participants' files from ACCRE:
 
     ```bash
     bash ~/lena-whisper/cleanup.sh 1006

@@ -60,9 +60,15 @@ step 3 "Prepare ${SHOW_DIR}"
 mkdir -p "${LW_DIR}/logs" "${LW_DIR}/runs"
 if [ ! -f "$LW_IDS_FILE" ]; then
     cat > "$LW_IDS_FILE" <<'EOF'
-# One participant ID per line, for example 1006. Each ID stands for all of
-# that child's recordings at the TIMEPOINT in config.sh. Lines that start
-# with # are ignored.
+# Vim Commands:
+# Use 'dd' to delete a line.
+# Use 'i' to enter insert mode.
+# Use 'esc' to exit insert mode.
+# Use ':wq' to save and quit.
+# ---
+# One participant ID per line, for example '1212'.
+# Each ID stands for all of that child's recordings at the TIMEPOINT in config.sh.
+# Lines that start with # are ignored.
 EOF
     echo "    [✓] Created participant_ids.txt"
 else
