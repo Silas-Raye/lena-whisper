@@ -134,7 +134,7 @@ run `cat ~/lena-whisper/my_commands.txt`.
     ```
 
     It lists the files and deletes them when you confirm, and removes the ID
-    from `participant_ids.txt`. It keeps the `.its` files.
+    from `participant_ids.txt`. It deletes the recordings' `.its` files too.
 
 ### Why you submit more than once
 

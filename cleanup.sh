@@ -13,9 +13,11 @@
 #   <ID>_output/transcriptOut/<participant>/                       transcripts
 #   <ID>_output/cryOut/<participant>_cry.csv                       cry and TV detection
 #   <ID>_output/combinedOut/<participant>_*.csv                    combined CSVs
-# and removes the ID from participant_ids.txt. It leaves the .its files in
-# itsFiles, which you may need for other recordings, and skips participants
-# with a job still queued or running.
+#   itsFiles/<participant>.its, itsFiles/<.its name>.its           the .its file
+# and removes the ID from participant_ids.txt. The .its files are the ones
+# named <participant>.its and the lookup table's files for that recorder at
+# TIMEPOINT; it leaves them if LW_ITS_DIR points at a folder the lab shares.
+# It skips participants with a job still queued or running.
 #
 # Every run also removes, without asking:
 #   - unfinished output files (*.partial) from jobs that stopped partway
@@ -75,6 +77,12 @@ done
 
 if [ "${#pids[@]}" -gt 0 ]; then
     busy=$(queued_participants whisper_subject,cry_subject)
+    # Other people's recordings may need the .its files in a shared folder.
+    own_its=1
+    if [ -n "${LW_ITS_DIR:-}" ]; then
+        own_its=0
+        echo "[~] Keeping the .its files: LW_ITS_DIR points at a folder others may use."
+    fi
     to_delete=()
     keep=()
     echo "[*] Files to delete:"
@@ -97,6 +105,17 @@ if [ "${#pids[@]}" -gt 0 ]; then
                 paths+=("$f")
             fi
         done
+        if [ "$own_its" = 1 ]; then
+            its_files=("$pid")
+            if [ -f "$LOOKUP_TABLE" ]; then
+                while IFS= read -r name; do
+                    its_files+=("$name")
+                done < <(its_names "$pid")
+            fi
+            for name in "${its_files[@]}"; do
+                paths+=("${ITS_DIR}/${name}.its" "${ITS_DIR}/${id4}/${name}.its")
+            done
+        fi
         found=$(sizes "${paths[@]}")
         echo "    ${pid}:"
         if [ -n "$found" ]; then
@@ -129,7 +148,7 @@ if [ "${#pids[@]}" -gt 0 ]; then
                 remove_from_list "$pid"
                 # Remove the <ID4> and <ID>_output folders if they're now empty.
                 out=$(output_dir "$pid")
-                for dir in "${RAW_DIR}/${pid:0:4}" "${CHUNK_DIR}/${pid:0:4}" \
+                for dir in "${RAW_DIR}/${pid:0:4}" "${CHUNK_DIR}/${pid:0:4}" "${ITS_DIR}/${pid:0:4}" \
                         "${out}/transcriptOut" "${out}/cryOut" "${out}/combinedOut" "$out"; do
                     rmdir "$dir" 2>/dev/null || true
                 done
