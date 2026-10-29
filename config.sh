@@ -25,12 +25,13 @@ LOOKUP_TABLE="${LW_DIR}/its_identifier_file_babies_crb.csv"
 # (6-mo_BABIES_LENA_Raw) and the lookup table rows (1006_6mo).
 TIMEPOINT="6-mo"
 # Where the lab server is mounted on each kind of computer, and its folders.
-# The print_*_commands.sh scripts put these into the copy commands they print.
+# The print_*_commands.sh scripts and copy_results_to_lab_server.sh put these
+# into the copy commands they print. Each child's results go in SERVER_TXT/<ID>/.
 SERVER_WIN="X:"
 SERVER_MAC="/Volumes/HumphreysLab"
 SERVER_RAW="Daily_2/LENA/LENA_raw/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_Raw"
 SERVER_ITS="Daily_2/LENA/LENA_raw/BABIES_CRB/ITS_files"
-SERVER_TXT="Daily_2/LENA/LENA_transcripts/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_transcripts"
+SERVER_TXT="Daily_2/LENA/LENA_transcripts_5min/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_transcripts"
 
 # ---- Software ---------------------------------------------------------------
 # Both Python environments live in the repository folder (LW_DIR, set by lib.sh).

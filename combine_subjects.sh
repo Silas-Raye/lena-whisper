@@ -90,7 +90,7 @@ status=0
 echo
 if [ "$status" -eq 0 ]; then
     echo "[✓] Done. To copy the results to the lab server, run:"
-    echo "    bash ${SHOW_DIR}/print_results_commands.sh"
+    echo "    bash ${SHOW_DIR}/copy_results_to_lab_server.sh"
 else
     echo "[!] Some participants weren't combined; the messages above say why."
     echo "    .its files go in ${ITS_DIR/#"$HOME"/"~"}/ (bash ${SHOW_DIR}/print_its_commands.sh)."

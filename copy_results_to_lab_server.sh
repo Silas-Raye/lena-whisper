@@ -1,14 +1,13 @@
 #!/bin/bash
-# print_results_commands.sh — print the commands that copy the results of the
-# participants in participant_ids.txt from ACCRE to the lab server.
+# copy_results_to_lab_server.sh — print the commands that copy the results of
+# the participants in participant_ids.txt from ACCRE to the lab server.
 #
 # Usage (on the ACCRE gateway):
-#   bash ~/lena-whisper/print_results_commands.sh
+#   bash ~/lena-whisper/copy_results_to_lab_server.sh
 #
 # Then paste the commands into a terminal on YOUR computer, connected to the
-# VPN and the lab server. For each recording they copy its Whisper JSON
-# folder and its CSVs from <ID>_output on ACCRE into the lab server's
-# <TIMEPOINT>_BABIES_LENA_transcripts/<ID4>/ folder.
+# VPN and the lab server. For each child they copy everything in <ID>_output
+# on ACCRE into the lab server's SERVER_TXT/<ID>/ folder (config.sh).
 
 set -euo pipefail
 # shellcheck source=lib.sh
@@ -23,23 +22,25 @@ fi
 host="${USER}@login.accre.vu"
 win_txt="${SERVER_WIN}/${SERVER_TXT}"
 win_txt_mkdir="${win_txt//\//\\}"   # cmd's mkdir needs backslashes
+mac_txt="${SERVER_MAC}/${SERVER_TXT}"
 
-# The recordings that have a combined CSV.
-pids=()
+# The children with at least one combined recording, by output folder.
+odirs=()
 while IFS= read -r pid; do
     if [ -f "$(combined_path "$pid")" ]; then
-        pids+=("$pid")
+        odirs+=("$(output_dir "$pid")")
     else
         echo "[!] ${pid}: not combined yet (combine_subjects.sh); skipping" >&2
     fi
 done < <(recording_ids "$LW_IDS_FILE")
+mapfile -t odirs < <(printf '%s\n' "${odirs[@]+"${odirs[@]}"}" | awk 'NF && !seen[$0]++')
 
-if [ "${#pids[@]}" -eq 0 ]; then
+if [ "${#odirs[@]}" -eq 0 ]; then
     echo "[X] No recording in participant_ids.txt is combined yet."
     exit 1
 fi
 
-cat <<EOF
+cat <<EOT
 
 Copy results to the lab server (${TIMEPOINT})
 =====================================================================
@@ -51,25 +52,23 @@ lab server first. Each scp asks for your VUNetID password.
 WINDOWS (Command Prompt; the lab server mapped to ${SERVER_WIN})
 ---------------------------------------------------------------------
 
-EOF
-for pid in "${pids[@]}"; do
-    id4="${pid:0:4}"
-    echo "mkdir \"${win_txt_mkdir}\\${id4}\" 2>nul"
-    echo "scp -r ${host}:$(transcript_dir "$pid") \"${win_txt}/${id4}/\""
-    echo "scp \"${host}:$(output_dir "$pid")/combinedOut/${pid}_*.csv\" \"${win_txt}/${id4}/\""
+EOT
+for odir in "${odirs[@]}"; do
+    id=$(basename "$odir" _output)
+    echo "mkdir \"${win_txt_mkdir}\\${id}\" 2>nul"
+    echo "scp -r \"${host}:${odir}/*\" \"${win_txt}/${id}/\""
     echo
 done
 
-cat <<EOF
+cat <<EOT
 
 MAC (Terminal)
 ---------------------------------------------------------------------
 
-EOF
-for pid in "${pids[@]}"; do
-    id4="${pid:0:4}"
-    echo "mkdir -p \"${SERVER_MAC}/${SERVER_TXT}/${id4}\""
-    echo "scp -r ${host}:$(transcript_dir "$pid") \"${SERVER_MAC}/${SERVER_TXT}/${id4}/\""
-    echo "scp \"${host}:$(output_dir "$pid")/combinedOut/${pid}_*.csv\" \"${SERVER_MAC}/${SERVER_TXT}/${id4}/\""
+EOT
+for odir in "${odirs[@]}"; do
+    id=$(basename "$odir" _output)
+    echo "mkdir -p \"${mac_txt}/${id}\""
+    echo "scp -r \"${host}:${odir}/*\" \"${mac_txt}/${id}/\""
     echo
 done

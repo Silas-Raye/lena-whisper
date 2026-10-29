@@ -122,7 +122,7 @@ run `cat ~/lena-whisper/my_commands.txt`.
    then paste the printed commands into a terminal on your own computer:
 
    ```bash
-   bash ~/lena-whisper/print_results_commands.sh
+   bash ~/lena-whisper/copy_results_to_lab_server.sh
    ```
 
 10. In the tracker, update the recordings' status.
@@ -178,8 +178,8 @@ Everything the pipeline makes for a child goes in one folder on ACCRE,
 | `<recording>_cry_tv.csv` | Cry and TV detection, one row per second. |
 | `<recording>_its.csv` | LENA's segments and 5-minute blocks from the `.its` file. |
 
-`print_results_commands.sh` copies these, plus the Whisper JSON files, to
-the lab server.
+`copy_results_to_lab_server.sh` copies the whole `<ID>_output` folder to the
+lab server, into `SERVER_TXT/<ID>/` (set in `config.sh`).
 
 ### The cry and TV CSV
 
@@ -297,7 +297,7 @@ repository. Replace it with a newer export when recordings are added.
 |---|---|
 | `setup.sh` | One-time setup for each user. |
 | `print_wav_commands.sh`, `print_its_commands.sh` | Print commands that copy recordings and `.its` files to ACCRE. |
-| `print_results_commands.sh` | Prints commands that copy results to the lab server. |
+| `copy_results_to_lab_server.sh` | Prints commands that copy results to the lab server. |
 | `submit_whisper_subjects.sh`, `run_whisper_subject.sh`, `batchWhisper.py` | Chunk and transcribe recordings on GPUs. |
 | `submit_cry_subjects.sh`, `run_cry_subject.sh`, `batchCryDetection.py` | Cry and TV detection with YAMNet on CPUs. |
 | `status.sh`, `cry_status.sh` | Show progress. |

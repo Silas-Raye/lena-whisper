@@ -225,7 +225,7 @@ commands with your paths filled in; run those on YOUR computer.
 
 7. Copy the results to the lab server
 
-       bash ${SHOW_DIR}/print_results_commands.sh
+       bash ${SHOW_DIR}/copy_results_to_lab_server.sh
 
 
 8. Delete the finished participants' files from ACCRE
@@ -244,6 +244,6 @@ cat <<EOF
     4. Start cry and TV detection    (bash ${SHOW_DIR}/submit_cry_subjects.sh)
     5. Check progress                (bash ${SHOW_DIR}/status.sh, cry_status.sh)
     6. Combine the results           (bash ${SHOW_DIR}/combine_subjects.sh)
-    7. Copy results to the server    (bash ${SHOW_DIR}/print_results_commands.sh)
+    7. Copy results to the server    (bash ${SHOW_DIR}/copy_results_to_lab_server.sh)
     All of these are in ${SHOW_DIR}/my_commands.txt.
 EOF
