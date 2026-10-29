@@ -30,7 +30,7 @@ TIMEPOINT="6-mo"
 SERVER_WIN="X:"
 SERVER_MAC="/Volumes/HumphreysLab"
 SERVER_RAW="Daily_2/LENA/LENA_raw/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_Raw"
-SERVER_ITS="Daily_2/LENA/LENA_raw/BABIES_CRB/ITS_files"
+SERVER_ITS="Daily_2/LENA/LENA_raw/BABIES_CRB/ITS_files/individual_exports/unzipped_files"
 SERVER_TXT="Daily_2/LENA/LENA_transcripts_5min/BABIES_CRB/${TIMEPOINT}_BABIES_LENA_transcripts"
 
 # ---- Software ---------------------------------------------------------------

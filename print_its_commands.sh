@@ -9,7 +9,8 @@
 # VPN and the lab server. The lookup table in this folder
 # (its_identifier_file_babies_crb.csv) names each child's .its files: the rows
 # whose ExternalReferenceID is <ID>_<age>, for example 1006_6mo for TIMEPOINT
-# 6-mo in config.sh. The commands search the lab server's ITS_files folder,
+# 6-mo in config.sh. The commands search the lab server's
+# ITS_files/individual_exports/unzipped_files folder,
 # including its subfolders, for those files.
 
 set -euo pipefail
